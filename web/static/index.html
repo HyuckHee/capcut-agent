@@ -163,6 +163,10 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
       <div class="field"><label>상단 제목 (비우면 없음 · | = 줄바꿈)</label><input id="title" placeholder="집온지 4일차 : 왕희의 하루"></div>
       <div class="field"><label>출력 파일명</label><input id="outName" placeholder="집온지 4일차_쇼츠"></div>
     </div>
+    <div class="row2" id="logoRow" style="display:none; margin-top:10px">
+      <div class="field"><label>🎬 영화 제목 (하단 궁서체 · 비우면 없음)</label><input id="logoText" placeholder="올빼미"></div>
+      <div class="field"><label>영화 부제 (개봉연도 등)</label><input id="logoSub" placeholder="The Night Owl · 2022"></div>
+    </div>
   </div>
 
   <hr>
@@ -300,9 +304,11 @@ function applyPresetDefaults() {
     $("#voice").value = "tc_65fbe54e2668bc4ddbd8b2a6";
     const pz = bgmList.find(b => b.name.includes("pizzicato"));
     $("#bgm").value = pz ? pz.path : "";
+    $("#logoRow").style.display = "none";  // 영화 로고는 영화 짤에서만
   } else {
     $("#voice").value = "tc_68257f68bc6e3c161ab5078d";
     $("#bgm").value = "";  // 영화 짤은 원본 소리 유지가 기본
+    $("#logoRow").style.display = "";
   }
 }
 
@@ -487,6 +493,12 @@ function buildSpec() {
     narrs: narrs.filter(n => n.text.trim()).map(n => [n.at, n.text.trim()]),
   };
   if ($("#bgm").value) spec.bgm = { path: $("#bgm").value, vol: parseFloat($("#bgmVol").value) || 0.15 };
+  const logoText = $("#logoText").value.trim();
+  if (logoText) {
+    spec.logo = { text: logoText };
+    const logoSub = $("#logoSub").value.trim();
+    if (logoSub) spec.logo.sub = logoSub;
+  }
   return spec;
 }
 
