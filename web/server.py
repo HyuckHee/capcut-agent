@@ -160,7 +160,33 @@ async def autodraft(payload: dict):
     return result
 
 
-from app.ai_draft import ai_draft, find_claude  # noqa: E402
+from app.ai_draft import ai_draft, recommend_edit, find_claude  # noqa: E402
+
+
+@app.post("/api/airecommend")
+async def airecommend(payload: dict):
+    """원본 클립 전체 + 줄거리를 Claude에게 보여주고 편집 구간을 추천받는다."""
+    profile = load_profile(payload.get("profile", "wanghee"))
+    style = profile.get("ai_style", "")
+    target_len = float(profile.get("target_len", 45))
+    max_len = 59.0 if payload.get("profile") == "cinema" else 90.0
+    clip_ids = payload["clips"]
+    clips = [{"path": CLIPS[c]["path"], "duration": CLIPS[c]["duration"]}
+             for c in clip_ids if c in CLIPS]
+    if not clips:
+        return JSONResponse({"error": "업로드된 클립이 없습니다"}, status_code=400)
+    if not find_claude():
+        return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
+    synopsis = (payload.get("synopsis") or "").strip()
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(
+            None, recommend_edit, clips, synopsis, style, target_len, max_len)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    for seg in result["segments"]:
+        seg["clip_id"] = clip_ids[seg.pop("clip")]
+    return result
 
 
 @app.post("/api/aidraft")

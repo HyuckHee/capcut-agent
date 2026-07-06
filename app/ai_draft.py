@@ -62,46 +62,63 @@ def _sample_points(segments: list[dict], interval: float) -> list[tuple[float, s
     return pts
 
 
-def build_montages(segments: list[dict], workdir: Path) -> tuple[list[dict], float]:
-    """완성 영상을 촘촘한 타임스탬프 몽타주로 만든다. (montages, 총길이) 반환.
+def _render_montages(points: list[tuple], workdir: Path, prefix: str) -> list[dict]:
+    """points=[(라벨초, 소스경로, 소스초)] → 타임스탬프 몽타주 이미지들. [{name, stamps}] 반환.
 
-    각 칸 좌상단에 완성영상 기준 시각(초)을 노란 글씨로 박아, Claude가 시각을 앵커로 쓸 수 있게 한다.
+    각 칸 좌상단에 라벨 시각(초)을 노란 글씨로 박아 Claude가 시각을 앵커로 쓸 수 있게 한다.
+    360×360 letterbox라 세로/가로 소스 모두 타일 정렬된다.
     """
-    workdir.mkdir(parents=True, exist_ok=True)
-    shutil.copy(FONT_SRC, workdir / "font.otf")  # drawtext는 상대 폰트경로 필요 (윈도 C:\ 이스케이프 회피)
-    total = sum((s["b"] - s["a"]) / (s.get("spd") or 1) for s in segments)
-    interval = max(1.0, total / TARGET_FRAMES)
-    pts = _sample_points(segments, interval)
-
-    # 1) 프레임별 추출 + 시각 라벨 (360×360 letterbox → 세로/가로 소스 모두 타일 정렬)
-    for k, (ot, src, st) in enumerate(pts):
+    if not (workdir / "font.otf").exists():
+        shutil.copy(FONT_SRC, workdir / "font.otf")  # drawtext는 상대 폰트경로 필요 (윈도 C:\ 이스케이프 회피)
+    for k, (lab, src, st) in enumerate(points):
         vf = ("scale=360:360:force_original_aspect_ratio=decrease,"
               "pad=360:360:(ow-iw)/2:(oh-ih)/2:color=black,"
-              f"drawtext=fontfile=font.otf:text='{ot:.1f}s':x=8:y=6:fontsize=30:"
+              f"drawtext=fontfile=font.otf:text='{lab:.1f}s':x=8:y=6:fontsize=30:"
               "fontcolor=yellow:box=1:boxcolor=black@0.6:boxborderw=5")
         subprocess.run(
             [config.FFMPEG, "-y", "-v", "error", "-ss", f"{st:.2f}", "-i", src,
-             "-vf", vf, "-frames:v", "1", "-q:v", "4", f"f{k:03d}.jpg"],
+             "-vf", vf, "-frames:v", "1", "-q:v", "4", f"{prefix}f{k:03d}.jpg"],
             capture_output=True, timeout=120, check=True, cwd=str(workdir))
 
-    # 2) 12칸씩 묶어 몽타주 타일 (4열)
     montages = []
-    for g in range(0, len(pts), TILES_PER_IMG):
-        grp = pts[g:g + TILES_PER_IMG]
-        gdir = workdir / f"g{g}"
+    for g in range(0, len(points), TILES_PER_IMG):
+        grp = points[g:g + TILES_PER_IMG]
+        gdir = workdir / f"{prefix}g{g}"
         gdir.mkdir(exist_ok=True)
         for j, k in enumerate(range(g, g + len(grp))):
-            shutil.copy(workdir / f"f{k:03d}.jpg", gdir / f"{j}.jpg")
+            shutil.copy(workdir / f"{prefix}f{k:03d}.jpg", gdir / f"{j}.jpg")
         cols = 4
         rows = math.ceil(len(grp) / cols)
-        name = f"montage{len(montages)}.jpg"
+        name = f"{prefix}montage{len(montages)}.jpg"
         subprocess.run(
             [config.FFMPEG, "-y", "-v", "error", "-start_number", "0",
              "-i", str(gdir / "%d.jpg"), "-frames:v", "1",
              "-vf", f"tile={cols}x{rows}", str(workdir / name)],
             capture_output=True, timeout=120, check=True)
-        montages.append({"name": name, "stamps": [p[0] for p in grp]})
-    return montages, round(total, 1)
+        montages.append({"name": name, "stamps": [round(p[0], 1) for p in grp]})
+    return montages
+
+
+def build_montages(segments: list[dict], workdir: Path) -> tuple[list[dict], float]:
+    """완성(편집) 영상을 완성영상 기준 시각 몽타주로. (montages, 총길이)."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    total = sum((s["b"] - s["a"]) / (s.get("spd") or 1) for s in segments)
+    interval = max(1.0, total / TARGET_FRAMES)
+    pts = _sample_points(segments, interval)
+    return _render_montages(pts, workdir, ""), round(total, 1)
+
+
+def build_source_montages(clip: dict, workdir: Path, prefix: str,
+                          target_frames: int = 44) -> list[dict]:
+    """원본 클립 '전체'를 원본 기준 시각 몽타주로. clip={path, duration}."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    dur = float(clip["duration"])
+    interval = max(0.8, dur / target_frames)
+    pts, t = [], 0.0
+    while t < dur - 1e-6:
+        pts.append((round(t, 1), clip["path"], round(t, 2)))
+        t += interval
+    return _render_montages(pts, workdir, prefix)
 
 
 def observe_prompt(montages: list[dict], synopsis: str) -> str:
@@ -207,8 +224,74 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "") -> dict:
     return result
 
 
+def recommend_prompt(clip_montages: list[dict], synopsis: str, style: str,
+                     target_len: float, max_len: float) -> str:
+    """원본 전체 관찰 몽타주 + 줄거리 → 편집 구간 추천 프롬프트."""
+    lines = [
+        "너는 유튜브 쇼츠 편집자다. 아래는 '원본 영상 전체'를 시간순으로 훑은 몽타주다.",
+        "각 칸 좌상단의 노란 숫자는 그 클립의 원본 기준 시각(초)이다. Read 도구로 전부 확인해라.",
+        "",
+        "[원본 몽타주]",
+    ]
+    for cm in clip_montages:
+        lines.append(f"■ 클립 {cm['ci']} (길이 {cm['duration']:.0f}초):")
+        for m in cm["montages"]:
+            lines.append(f"  - {m['name']} (칸별 시각: {', '.join(str(s) for s in m['stamps'])}초)")
+    if synopsis:
+        lines += ["", "[줄거리]", synopsis]
+    lines += [
+        "",
+        f"[채널 스타일]\n{style}",
+        "",
+        "[임무] 위 줄거리의 흐름(도입 → 복선 → 반전 → 결말)이 담기도록, 원본에서 쇼츠에 넣을",
+        "구간을 골라라. 화면에 실제로 보이는 것을 근거로 고르되, 어느 장면이 어느 대목인지는 줄거리로 해석해라.",
+        "[규칙]",
+        f"- 선택 구간 총합 {target_len:.0f}초 내외, 최대 {max_len:.0f}초 (쇼츠 한도).",
+        "- 반전·결정적 순간은 반드시 포함. 복선 장면을 반전보다 앞에 배치.",
+        "- 각 구간 2~10초, 시간순. 각 클립 원본 시각 기준 a<b.",
+        "- 화면으로 확인 안 되는 장면을 지어내지 말 것. 줄거리에만 있고 화면에 없으면 note에 밝혀라.",
+        "",
+        "아래 JSON만 출력해라:",
+        '{"segments": [{"clip": 0, "a": 0.0, "b": 5.0, "role": "도입", "why": "화면 근거"}],'
+        ' "note": "편집 의도/한계 한두 문장"}',
+    ]
+    return "\n".join(lines)
+
+
+def recommend_edit(clips: list[dict], synopsis: str, style: str,
+                   target_len: float = 45.0, max_len: float = 59.0) -> dict:
+    """원본 클립 전체 + 줄거리 → 편집 구간 추천. clips=[{path, duration}].
+
+    반환: {segments:[{clip, a, b, role, why}], note}. clip은 clips 리스트 인덱스.
+    """
+    workdir = FRAME_DIR / ("rec_" + uuid.uuid4().hex[:8])
+    clip_montages = []
+    for ci, c in enumerate(clips):
+        ms = build_source_montages(c, workdir, prefix=f"c{ci}_")
+        clip_montages.append({"ci": ci, "duration": float(c["duration"]), "montages": ms})
+
+    data = run_claude(
+        recommend_prompt(clip_montages, synopsis, style, target_len, max_len), workdir)
+
+    segments = []
+    for s in data.get("segments", []):
+        ci = int(s.get("clip", 0))
+        if not (0 <= ci < len(clips)):
+            continue
+        a, b = float(s["a"]), float(s["b"])
+        a = max(0.0, min(a, clips[ci]["duration"]))
+        b = max(a + 0.5, min(b, clips[ci]["duration"]))
+        segments.append({"clip": ci, "a": round(a, 1), "b": round(b, 1),
+                         "role": str(s.get("role", "")), "why": str(s.get("why", ""))})
+    return {"segments": segments, "note": data.get("note", "")}
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     spec = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    print(json.dumps(ai_draft(spec["segments"], spec["style"], spec.get("synopsis", "")),
-                     ensure_ascii=False, indent=1))
+    if spec.get("mode") == "recommend":
+        print(json.dumps(recommend_edit(spec["clips"], spec.get("synopsis", ""),
+                                         spec.get("style", "")), ensure_ascii=False, indent=1))
+    else:
+        print(json.dumps(ai_draft(spec["segments"], spec["style"], spec.get("synopsis", "")),
+                         ensure_ascii=False, indent=1))

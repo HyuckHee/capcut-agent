@@ -89,10 +89,12 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <div id="drop">영상을 끌어다 놓거나 클릭해서 선택 (mp4 · mov)</div>
     <input type="file" id="file" accept="video/*" multiple style="display:none">
     <div id="clips"></div>
-    <div style="margin-top:12px">
+    <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+      <button onclick="aiRecommend()" id="arBtn" style="border-color:var(--acc); color:var(--acc); padding:10px 16px">🎬 AI 편집 추천</button>
       <button onclick="oneClick()" id="ocBtn" class="acc" style="padding:10px 18px">🪄 원클릭 AI 편집</button>
-      <span class="hint" id="ocHint">구간 배치 + 제목·나레이션까지 한 번에 셋팅합니다 (확인 후 렌더링만 누르면 끝)</span>
     </div>
+    <div class="hint" id="arHint" style="margin-top:8px">🎬 <b>AI 편집 추천</b>: 원본 전체를 보고 줄거리 흐름(복선·반전)에 맞는 구간을 골라줍니다. 아래 <b>줄거리</b>를 먼저 적으면 정확해져요. · 🪄 <b>원클릭</b>: 구간+제목+나레이션 전체 자동</div>
+    <div id="arInfo" style="display:none; margin-top:10px"></div>
   </div>
 
   <div class="card" id="playerCard" style="display:none">
@@ -244,6 +246,35 @@ async function autoDraft() {
     alert("분석 실패: " + e);
   } finally {
     btn.disabled = false; btn.textContent = "✦ AI 초안 잡기";
+  }
+}
+
+// ── AI 편집 추천: 원본 전체 + 줄거리 → 스토리에 맞는 편집 구간 (Claude)
+async function aiRecommend() {
+  if (!clips.length) return alert("먼저 영상을 업로드하세요");
+  if (!preset) return alert("프리셋을 먼저 선택하세요");
+  const btn = $("#arBtn");
+  btn.disabled = true; btn.textContent = "🎬 원본 보고 편집 구간 찾는 중… (2~5분)";
+  try {
+    const res = await (await fetch("/api/airecommend", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(), clips: clips.map(c => c.id) }),
+    })).json();
+    if (res.error) throw res.error;
+    if (!res.segments || !res.segments.length) throw "추천 구간을 찾지 못했습니다";
+    segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: 1, tags: s.role || "" }));
+    renderSegs();
+    const total = res.segments.reduce((t, s) => t + (s.b - s.a), 0).toFixed(1);
+    const rows = res.segments.map(s => `<tr><td style="width:70px; color:var(--dim); vertical-align:top">${s.a}~${s.b}s</td><td style="width:64px; color:var(--acc); vertical-align:top">${(s.role || "").replace(/</g, "&lt;")}</td><td>${(s.why || "").replace(/</g, "&lt;")}</td></tr>`).join("");
+    $("#arInfo").innerHTML =
+      `<div class="hint" style="margin-bottom:6px">추천 ${res.segments.length}개 구간 · 합계 ${total}초` +
+      (res.note ? ` — ${res.note.replace(/</g, "&lt;")}` : "") + `</div>` +
+      `<table style="font-size:12px">${rows}</table>`;
+    $("#arInfo").style.display = "block";
+  } catch (e) {
+    alert("AI 편집 추천 실패: " + e);
+  } finally {
+    btn.disabled = false; btn.textContent = "🎬 AI 편집 추천";
   }
 }
 
