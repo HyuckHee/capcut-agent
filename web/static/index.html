@@ -189,7 +189,7 @@ const $ = s => document.querySelector(s);
 document.querySelectorAll(".preset").forEach(el => el.onclick = () => {
   document.querySelectorAll(".preset").forEach(e => e.classList.remove("on"));
   el.classList.add("on"); preset = el.dataset.p;
-  $("#voice").value = preset === "wanghee" ? "tc_65fbe54e2668bc4ddbd8b2a6" : "tc_68257f68bc6e3c161ab5078d";
+  applyPresetDefaults();
   $("#uploadCard").style.opacity = "1";
   $("#uploadCard").style.pointerEvents = "auto";
   $("#presetHint").textContent = preset === "wanghee" ? "🐶 왕희 브이로그 선택됨" : "🎬 영화 짤 선택됨";
@@ -282,16 +282,29 @@ async function refreshStorage() {
 }
 refreshStorage();
 
+let bgmList = [];
 async function loadOpts() {
   const vs = await (await fetch("/api/voices")).json();
-  $("#voice").innerHTML = vs.map(v => `<option value="${v.id}">${v.name}</option>`).join("");
-  const bs = await (await fetch("/api/bgms")).json();
+  $("#voice").innerHTML = '<option value="">— 프리셋 선택 시 자동 설정 —</option>' +
+    vs.map(v => `<option value="${v.id}">${v.name}</option>`).join("");
+  bgmList = await (await fetch("/api/bgms")).json();
   $("#bgm").innerHTML = '<option value="">없음</option>' +
-    bs.map(b => `<option value="${b.path}">${b.name}</option>`).join("");
-  const pz = bs.find(b => b.name.includes("pizzicato"));
-  if (pz) $("#bgm").value = pz.path;
+    bgmList.map(b => `<option value="${b.path}">${b.name}</option>`).join("");
+  applyPresetDefaults();  // 옵션 로딩 전에 프리셋을 눌렀어도 반영
 }
 loadOpts();
+
+function applyPresetDefaults() {
+  if (!preset) return;  // 실수 방지: 프리셋 선택 전엔 아무것도 미리 고르지 않는다
+  if (preset === "wanghee") {
+    $("#voice").value = "tc_65fbe54e2668bc4ddbd8b2a6";
+    const pz = bgmList.find(b => b.name.includes("pizzicato"));
+    $("#bgm").value = pz ? pz.path : "";
+  } else {
+    $("#voice").value = "tc_68257f68bc6e3c161ab5078d";
+    $("#bgm").value = "";  // 영화 짤은 원본 소리 유지가 기본
+  }
+}
 
 const drop = $("#drop");
 drop.onclick = () => $("#file").click();
@@ -487,6 +500,8 @@ function setStep(n) {
 }
 
 async function render() {
+  if (!preset) return alert("프리셋을 먼저 선택하세요");
+  if (!$("#voice").value) return alert("음성을 선택하세요");
   if (!segs.length) return alert("세그먼트를 추가하세요");
   $("#progress").style.display = "block";
   $("#result").innerHTML = ""; $("#log").style.display = "none"; $("#log").textContent = "";
