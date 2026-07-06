@@ -246,6 +246,8 @@ def run_job(job_id: str, spec: dict):
 async def render(payload: dict):
     job_id = uuid.uuid4().hex[:8]
     title_out = (payload.get("output_name") or f"웹렌더_{job_id}").strip()
+    if title_out.lower().endswith(".mp4"):
+        title_out = title_out[:-4]
     spec = payload["spec"]
     spec["output"] = str(OUTPUT_DIR / f"{title_out}.mp4")
     JOBS[job_id] = queue.Queue()
