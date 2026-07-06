@@ -34,6 +34,9 @@ hr { border:none; border-top:1px solid var(--line); margin:24px 0; }
 table { width:100%; border-collapse:collapse; font-size:13px; }
 th { text-align:left; color:var(--dim); font-weight:500; font-size:12px; padding:6px 8px; }
 td { padding:5px 8px; border-top:1px solid var(--line); }
+#segT tbody tr { cursor:pointer; }
+#segT tbody tr.sel td { background:rgba(34,197,94,.07); }
+#segT tbody tr.sel td:first-child { box-shadow:inset 3px 0 0 var(--acc); }
 input, select, textarea { background:#0f0f0f; border:1px solid var(--line); color:var(--tx);
         border-radius:6px; padding:7px 9px; font-size:13px; width:100%;
         font-variant-numeric:tabular-nums; }
@@ -85,6 +88,21 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <div id="drop">영상을 끌어다 놓거나 클릭해서 선택 (mp4 · mov)</div>
     <input type="file" id="file" accept="video/*" multiple style="display:none">
     <div id="clips"></div>
+  </div>
+
+  <div class="card" id="playerCard" style="display:none">
+    <h2>플레이어 <span class="chip" id="plClip">-</span> <span class="chip" id="plTime">0.0s</span></h2>
+    <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap">
+      <video id="player" style="max-height:340px; max-width:100%; border-radius:10px; border:1px solid var(--line); background:#000" controls></video>
+      <div style="flex:1; min-width:220px">
+        <div class="hint" style="margin-bottom:10px">세그먼트 행을 선택하고, 재생 위치에서 시작/끝을 찍으세요</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap">
+          <button onclick="setPoint('a')">⏱ 현재 위치 → 시작점</button>
+          <button onclick="setPoint('b')">⏱ 현재 위치 → 끝점</button>
+        </div>
+        <div class="hint" id="selInfo" style="margin-top:10px">선택된 세그먼트 없음</div>
+      </div>
+    </div>
   </div>
 
   <div class="card">
@@ -240,6 +258,7 @@ function renderClips() {
   $("#clips").innerHTML = clips.map(c =>
     `<div class="clip"><img src="${c.thumb}"><div class="nm">${c.name}</div>
      <span class="chip">${c.duration}s</span><span class="chip">${c.portrait ? "세로" : "가로"}</span>
+     <button class="mini" onclick="playClip('${c.id}')" style="color:var(--acc)">▶ 재생</button>
      <button class="mini" onclick="addSeg('${c.id}')">+ 구간</button></div>`).join("");
   refreshSegSelects();
 }
@@ -252,17 +271,24 @@ function addSeg(clipId) {
 }
 
 function renderSegs() {
-  $("#segT tbody").innerHTML = segs.map((s, i) => `<tr>
+  $("#segT tbody").innerHTML = segs.map((s, i) => `<tr class="${i === selSeg ? "sel" : ""}" onclick="selectSeg(${i})">
     <td><select onchange="segs[${i}].clip=this.value" data-i="${i}" class="clipSel"></select></td>
     <td><input class="t" value="${s.a}" onchange="segs[${i}].a=parseFloat(this.value)||0; stats()"></td>
     <td><input class="t" value="${s.b}" onchange="segs[${i}].b=parseFloat(this.value)||0; stats()"></td>
     <td><input class="spd" value="${s.spd}" onchange="segs[${i}].spd=parseFloat(this.value)||1; stats()"></td>
     <td style="white-space:nowrap">
-      <button class="mini" onclick="mv(${i},-1)">↑</button>
-      <button class="mini" onclick="mv(${i},1)">↓</button>
-      <button class="mini" onclick="segs.splice(${i},1);renderSegs()">✕</button></td>
+      <button class="mini" onclick="event.stopPropagation(); previewSeg(${i})" style="color:var(--acc)">▶</button>
+      <button class="mini" onclick="event.stopPropagation(); mv(${i},-1)">↑</button>
+      <button class="mini" onclick="event.stopPropagation(); mv(${i},1)">↓</button>
+      <button class="mini" onclick="event.stopPropagation(); delSeg(${i})">✕</button></td>
   </tr>`).join("");
   refreshSegSelects(); stats();
+}
+
+function delSeg(i) {
+  segs.splice(i, 1);
+  if (selSeg === i) selSeg = -1; else if (selSeg > i) selSeg--;
+  renderSegs(); updateSelInfo();
 }
 
 function refreshSegSelects() {
@@ -275,8 +301,65 @@ function refreshSegSelects() {
 
 function mv(i, d) {
   const j = i + d; if (j < 0 || j >= segs.length) return;
-  [segs[i], segs[j]] = [segs[j], segs[i]]; renderSegs();
+  [segs[i], segs[j]] = [segs[j], segs[i]];
+  if (selSeg === i) selSeg = j; else if (selSeg === j) selSeg = i;
+  renderSegs();
 }
+
+// ── 플레이어: 세그먼트 선택 → 재생 확인 → 현재 위치를 시작/끝점으로
+let selSeg = -1, plStop = null, plClipId = null;
+const pl = $("#player");
+
+function loadClip(clipId) {
+  if (plClipId === clipId) return;
+  plClipId = clipId;
+  pl.src = "/api/clip/" + clipId;
+  const c = clips.find(x => x.id === clipId);
+  $("#plClip").textContent = c ? c.name : clipId;
+}
+
+function selectSeg(i) {
+  selSeg = i; plStop = null;
+  const s = segs[i];
+  $("#playerCard").style.display = "";
+  loadClip(s.clip);
+  const seek = () => { pl.currentTime = s.a; };
+  pl.readyState >= 1 ? seek() : pl.addEventListener("loadedmetadata", seek, { once: true });
+  renderSegs(); updateSelInfo();
+}
+
+function previewSeg(i) {
+  selectSeg(i);
+  plStop = segs[i].b;
+  pl.play();
+}
+
+function playClip(clipId) {
+  $("#playerCard").style.display = "";
+  plStop = null;
+  loadClip(clipId);
+  pl.play();
+}
+
+function setPoint(which) {
+  if (selSeg < 0 || !segs[selSeg]) return alert("먼저 세그먼트 행을 선택하세요");
+  const t = Math.round(pl.currentTime * 10) / 10;
+  segs[selSeg][which === "a" ? "a" : "b"] = t;
+  renderSegs(); updateSelInfo();
+}
+
+function updateSelInfo() {
+  const el = $("#selInfo");
+  if (selSeg < 0 || !segs[selSeg]) { el.textContent = "선택된 세그먼트 없음"; return; }
+  const s = segs[selSeg];
+  const c = clips.find(x => x.id === s.clip);
+  el.textContent = `#${selSeg + 1} · ${c ? c.name : ""} · ${s.a}s ~ ${s.b}s (${(s.b - s.a).toFixed(1)}s)`;
+}
+
+pl.addEventListener("timeupdate", () => {
+  $("#plTime").textContent = pl.currentTime.toFixed(1) + "s";
+  if (plStop !== null && pl.currentTime >= plStop) { pl.pause(); plStop = null; }
+});
 
 let narrs = [];
 function addNarr() { narrs.push({ at: 0, text: "" }); renderNarrs(); }

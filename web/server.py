@@ -197,4 +197,13 @@ async def video(path: str):
     return JSONResponse({"error": "not found"}, status_code=404)
 
 
+@app.get("/api/clip/{clip_id}")
+async def clip_stream(clip_id: str):
+    """업로드된 원본 클립 스트리밍 (플레이어용 — Range 지원으로 탐색 가능)."""
+    c = CLIPS.get(clip_id)
+    if not c:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return FileResponse(c["path"], media_type="video/mp4")
+
+
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
