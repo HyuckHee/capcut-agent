@@ -1,0 +1,510 @@
+"""영화/드라마 짤 쇼츠 렌더러 — 검은 배경 + 상단 제목 + 대사/설명 자막 + 나레이션.
+
+사용:
+  python render_cinema.py <영상> <출력.mp4> --seg 시작-끝|파일|시작|끝 ...
+      --title "첫줄|둘째줄"
+      --subs 대본.json            (기본입력 원본시각 기준 대사 자막)
+      --sub  "A-B:텍스트"         (타임라인 시각 기준 대사 자막)
+      --exp  "A-B:텍스트"         (설명 자막 — 큰 노란 박스, 나레이터 톤)
+      --narr "A:텍스트"           (한국어 TTS 나레이션, 원본 오디오 자동 덕킹)
+      --crop W:H:X:Y
+
+대사 자막 = 흰색 작게 하단. 설명 자막 = 노란 박스 크게. BGM/효과음 없음(원본 사운드 유지).
+"""
+import argparse
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+from app import config
+from app.narrate import synth, warm, DEFAULT_VOICE, DEFAULT_RATE, DEFAULT_PITCH
+
+OUT_W, OUT_H = 1080, 1920
+FONT_SOURCE = Path("C:/Windows/Fonts/malgunbd.ttf")   # 대사 자막용
+FONT_EXP = Path(__file__).resolve().parent / "library" / "fonts" / "Pretendard-ExtraBold.otf"
+FONT_NARR = Path(__file__).resolve().parent / "library" / "fonts" / "Gungsuh.ttf"  # 궁서 (영화 로고)
+FONT_ROUND = Path(__file__).resolve().parent / "library" / "fonts" / "Jua-Regular.ttf"  # 주아 (나레이션, 둥글둥글)
+
+# 비디오헤드클리너 구도: 상단 소제목 / 중앙 영상 / 하단 자막 / 최하단 영화 로고 타이틀
+TITLE_SIZE = 54        # 소제목 (영상 위)
+TITLE_Y = 575
+TITLE_LINE_GAP = 72
+SUB_SIZE = 40          # 대사 자막 (영상 하단 안쪽)
+SUB_Y = 1115
+EXP_SIZE = 50          # 나레이션 자막 (영상 바로 아래, 항상 1줄)
+EXP_Y = 1255
+LOGO_SIZE = 130        # 영화 로고 타이틀 (궁서)
+LOGO_Y = 1500
+LOGO_SUB_SIZE = 34
+LOGO_SUB_Y = 1665
+LABEL_SIZE = 38        # 인물 설명 라벨
+MIN_SUB_LEN = 0.3
+NARR_DUCK = 0.30       # 나레이션 중 원본 볼륨
+NARR_VOL = 1.6         # 나레이션 볼륨
+EXP_HL = "0xFFD400"    # 키워드 포함 구 강조색 (노랑)
+EXP_WHITE = "white"
+CHUNK_CHARS = 13       # 나레이션 자막 구 길이
+
+
+def chunk_script(text: str, limit: int = CHUNK_CHARS) -> list[str]:
+    """나레이션 문장을 짧은 구 단위로 분할 (치고 빠지는 쇼츠 자막용)."""
+    words = text.split()
+    chunks, cur = [], ""
+    for w in words:
+        cand = (cur + " " + w).strip()
+        if cur and (len(cand) > limit or cur[-1] in ",.!?…"):
+            chunks.append(cur)
+            cur = w
+        else:
+            cur = cand
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def word_timings(wav: Path) -> list[tuple[float, float, str]]:
+    """faster-whisper 단어 타임스탬프 — TTS 음성은 인식률이 높아 타이밍 그리드로 적합."""
+    from faster_whisper import WhisperModel
+    global _WM
+    if "_WM" not in globals():
+        _WM = WhisperModel("small", device="cpu", compute_type="int8")
+    segs, _ = _WM.transcribe(str(wav), language="ko", word_timestamps=True)
+    out = []
+    for s in segs:
+        for w in (s.words or []):
+            out.append((w.start, w.end, w.word.strip()))
+    return out
+
+
+def sync_chunks(text: str, wav: Path, dur: float,
+                mode: str = "chunk") -> list[tuple[float, float, str]]:
+    """스크립트 텍스트를 나누고 실제 음성의 단어 타이밍에 정렬.
+
+    '|' = 수동 분할. mode="sentence"면 문장 단위 통표시 (잘게 안 쪼갬 — 싱크 체감 좋음),
+    mode="chunk"면 짧은 구 단위 (치고 빠지는 쇼츠 스타일).
+    """
+    if "|" in text:
+        chunks = [c.strip() for c in text.split("|") if c.strip()]
+    elif mode == "sentence":
+        chunks = [c.strip() for c in re.split(r"(?<=[.!?…])\s+", text) if c.strip()]
+    else:
+        chunks = chunk_script(text)
+    try:
+        words = word_timings(wav)
+        assert words
+    except Exception:
+        # 폴백: 글자수 비례 배치
+        chars = sum(len(c) for c in chunks) or 1
+        cursor, out = 0.0, []
+        for c in chunks:
+            w = dur * len(c) / chars
+            out.append((cursor, cursor + w, c))
+            cursor += w
+        return out
+    # 스크립트 누적 글자비율 → 인식 단어 누적 글자비율에 매핑해 경계 시각 결정
+    script_total = sum(len(c.replace(" ", "")) for c in chunks) or 1
+    rec_lens = [len(w[2]) for w in words]
+    rec_total = sum(rec_lens) or 1
+    out, acc = [], 0
+    t_prev = words[0][0]
+    for c in chunks:
+        acc += len(c.replace(" ", ""))
+        target = acc / script_total * rec_total
+        run, t_end = 0, words[-1][1]
+        for idx, L in enumerate(rec_lens):
+            run += L
+            if run >= target:
+                # 경계 = 다음 단어의 시작 (단어 끝 기준이면 자막이 살짝 늦게 떠서 밀림)
+                t_end = words[idx + 1][0] if idx + 1 < len(words) else words[idx][1]
+                break
+        out.append([t_prev, max(t_end, t_prev + 0.25), c])
+        t_prev = t_end
+
+    # 보정: 최소 표시시간 보장 + 경계 단조 정렬 (인식 누락으로 짧아진 청크 방지)
+    prev_end = None
+    for ch in out:
+        if prev_end is not None and ch[0] < prev_end:
+            ch[0] = prev_end
+        ch[1] = max(ch[1], ch[0] + 0.45)
+        prev_end = ch[1]
+    # 마지막 자막은 음성 끝 + 최소 1.2초 여운 (말 끝나자마자 사라지지 않게)
+    out[-1][1] = max(out[-1][1], dur - 0.02, out[-1][0] + 1.2)
+    return [tuple(ch) for ch in out]
+
+
+def est_units(text: str) -> float:
+    """대략적 표시 폭 (전각=1, 공백/반각=0.5)."""
+    u = 0.0
+    for ch in text:
+        if ch == " ":
+            u += 0.45
+        elif ord(ch) > 0x2E80:
+            u += 1.0
+        else:
+            u += 0.55
+    return u
+
+
+def wrap(text: str, limit: int = 18) -> str:
+    if len(text) <= limit or " " not in text:
+        return text
+    mid = len(text) // 2
+    spaces = [i for i, c in enumerate(text) if c == " "]
+    at = min(spaces, key=lambda i: abs(i - mid))
+    return text[:at] + "\n" + text[at + 1:]
+
+
+def probe_dur(path: Path) -> float:
+    out = subprocess.run(
+        [config.FFPROBE, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, check=True, timeout=60)
+    return float(out.stdout.strip())
+
+
+def parse_ranges(specs, three=False):
+    out = []
+    for spec in specs:
+        rng, text = spec.split(":", 1)
+        a, b = rng.split("-")
+        out.append((float(a), float(b), text.strip()))
+    return out
+
+
+def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("video", nargs="?")
+    p.add_argument("output", nargs="?")
+    p.add_argument("--spec", default=None, help="UTF-8 JSON으로 모든 파라미터 전달 (한글 안전)")
+    p.add_argument("--seg", action="append", default=[], metavar="시작-끝|파일|시작|끝")
+    p.add_argument("--title", default="")
+    p.add_argument("--subs", default=None)
+    p.add_argument("--sub", action="append", default=[])
+    p.add_argument("--exp", action="append", default=[], metavar="A-B:텍스트")
+    p.add_argument("--narr", action="append", default=[], metavar="A:텍스트")
+    p.add_argument("--voice", default=DEFAULT_VOICE, help="edge-tts 음성 (기본 여성 SunHi)")
+    p.add_argument("--narr-rate", default=DEFAULT_RATE, help="나레이션 속도 예: +5%%")
+    p.add_argument("--narr-pitch", default=DEFAULT_PITCH, help="나레이션 피치 예: +8Hz")
+    p.add_argument("--crop", default=None, metavar="W:H:X:Y")
+    args = p.parse_args()
+
+    # ── --spec JSON 우선: {video, output, crop, title, voice, rate, pitch,
+    #     segs:[[파일,A,B] 또는 [A,B]], subs:[[A,B,텍스트]], exps:[...], narrs:[[A,텍스트]]}
+    if args.spec:
+        sp = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+        video = sp.get("video", args.video)
+        output = sp["output"]
+        crop_val = sp.get("crop", args.crop)
+        title = sp.get("title", "")
+        voice = sp.get("voice", DEFAULT_VOICE)
+        rate = sp.get("rate", DEFAULT_RATE)
+        pitch = sp.get("pitch", DEFAULT_PITCH)
+        # segs 항목: [A,B] / [파일,A,B] / [파일,A,B,배속] (배속 0.5=슬로우)
+        segs = []
+        for s in sp["segs"]:
+            if isinstance(s[0], str):
+                spd = float(s[3]) if len(s) > 3 else 1.0
+                segs.append((s[0], float(s[1]), float(s[2]), spd))
+            else:
+                segs.append((video, float(s[0]), float(s[1]), 1.0))
+        subs = [(float(a), float(b), t) for a, b, t in sp.get("subs", [])]
+        exps = [(float(a), float(b), t) for a, b, t in sp.get("exps", [])]
+        # narrs 항목: [at, text] / [at, text, wav경로] /
+        #   {"at":.., "text": 말할 내용, "caption": 자막 텍스트('|'=수동분할), "wav": 경로}
+        narrs = []
+        for entry in sp.get("narrs", []):
+            if isinstance(entry, dict):
+                narrs.append((float(entry["at"]), entry["text"],
+                              entry.get("wav"), entry.get("caption")))
+            else:
+                wav = entry[2] if len(entry) > 2 else None
+                narrs.append((float(entry[0]), entry[1], wav, None))
+        narr_captions = sp.get("narr_captions", False)
+        narr_warm = sp.get("narr_warm", True)
+        keywords = sp.get("keywords", [])
+        exp_color = sp.get("exp_color", EXP_HL)
+        caption_mode = sp.get("caption_mode", "chunk")  # "sentence" = 문장 통표시
+        logo = sp.get("logo")            # {"text": "올빼미", "sub": "The Night Owl · 2022"}
+        labels = sp.get("labels", [])    # [[t0, t1, "(맹인 침술사)", x, y], ...]
+        wide = sp.get("aspect") == "wide"  # 가로 16:9 (롱폼용)
+        src_portrait = sp.get("src_portrait", False)  # 세로 촬영 소스 → 풀스크린
+        bgm = sp.get("bgm")              # {"path": wav(생략시 라이브러리 첫 곡), "vol": 0.18}
+    else:
+        video, output, crop_val = args.video, args.output, args.crop
+        title, voice, rate, pitch = args.title, args.voice, args.narr_rate, args.narr_pitch
+        segs = []
+        for spec in args.seg:
+            if "|" in spec:
+                path, a, b = spec.rsplit("|", 2)
+                segs.append((path, float(a), float(b), 1.0))
+            else:
+                a, b = spec.split("-")
+                segs.append((video, float(a), float(b), 1.0))
+        subs = parse_ranges(args.sub)
+        if args.subs:
+            script = json.loads(Path(args.subs).read_text(encoding="utf-8"))
+            cursor = 0.0
+            for path, a, b, _spd in segs:
+                if path == video:
+                    for s in script:
+                        s0, s1 = max(s["start"], a), min(s["end"], b)
+                        if s1 - s0 >= MIN_SUB_LEN:
+                            subs.append((cursor + s0 - a, cursor + s1 - a, s["text"]))
+                cursor += b - a
+        exps = parse_ranges(args.exp)
+        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None)
+                 for s in args.narr]
+        narr_captions = False
+        narr_warm = True
+        keywords = []
+        exp_color = EXP_HL
+        caption_mode = "chunk"
+        logo = None
+        labels = []
+        wide = False
+        src_portrait = False
+        bgm = None
+
+    total = sum((b - a) / spd for _, a, b, spd in segs)
+    subs.sort()
+
+    # ── 레이아웃 좌표 (세로 쇼츠 vs 가로 롱폼)
+    if wide:  # 1920x1080: 본편 원크기 중앙(위아래 검은 바 138px), 바 안에 제목/자막
+        out_w, out_h = 1920, 1080
+        title_size, title_y, title_gap = 42, 40, 52
+        sub_size, sub_y = 40, 845          # 대사: 본편 하단 안쪽
+        exp_size, exp_y = 48, 972          # 나레이션: 하단 검은 바
+        logo_size, logo_y = 52, 32         # 로고: 우상단 코너
+        logo_right = True
+        logo_sub_on = False
+    else:     # 1080x1920 쇼츠
+        out_w, out_h = OUT_W, OUT_H
+        title_size, title_y, title_gap = TITLE_SIZE, TITLE_Y, TITLE_LINE_GAP
+        sub_size, sub_y = SUB_SIZE, SUB_Y
+        exp_size, exp_y = EXP_SIZE, EXP_Y
+        logo_size, logo_y = LOGO_SIZE, LOGO_Y
+        logo_right = False
+        logo_sub_on = True
+    # spec에서 나레이션 자막 크기/위치 직접 지정 가능
+    if args.spec:
+        exp_size = sp.get("exp_size", exp_size)
+        exp_y = sp.get("exp_y", exp_y)
+
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        import shutil
+        shutil.copy(FONT_SOURCE, tmp / "font.ttf")
+        shutil.copy(FONT_EXP, tmp / "fontx.otf")   # Pretendard ExtraBold (제목)
+        shutil.copy(FONT_NARR, tmp / "fontn.ttf")   # 궁서 (영화 로고)
+        shutil.copy(FONT_ROUND, tmp / "fontr.ttf")  # 주아 (나레이션 자막 — 대사와 폰트 차별화)
+
+        # ── 나레이션 TTS 생성 + 길이 측정
+        # 캐시: 같은 (음성|속도|피치|후처리|문구)면 저장본 재사용 → API 크레딧 절약.
+        # 바뀐 문장만 새로 합성된다.
+        import hashlib
+        cache_dir = Path(__file__).resolve().parent / ".cache" / "narr"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        narr_files = []
+        for ni, (at, text, wavsrc, _cap) in enumerate(narrs):
+            wav = tmp / f"narr{ni}.wav"
+            if wavsrc:  # 외부 음성 파일 직접 삽입 — 24kHz mono로 정규화
+                subprocess.run([config.FFMPEG, "-y", "-v", "error", "-i", wavsrc,
+                                "-ar", "24000", "-ac", "1", str(wav)], check=True, timeout=120)
+                if narr_warm:
+                    warm(wav, config.FFMPEG)
+            else:
+                key = hashlib.sha1(
+                    f"{voice}|{rate}|{pitch}|{narr_warm}|{text}".encode("utf-8")
+                ).hexdigest()[:16]
+                cached = cache_dir / f"{key}.wav"
+                if cached.exists():
+                    shutil.copy(cached, wav)
+                    print(f"  나레이션 {ni + 1}: 캐시 재사용")
+                else:
+                    synth(text, wav, voice=voice, rate=rate, pitch=pitch)
+                    if narr_warm:
+                        warm(wav, config.FFMPEG)
+                    shutil.copy(wav, cached)
+                    print(f"  나레이션 {ni + 1}: 새로 합성 (캐시 저장)")
+            narr_files.append((at, wav, probe_dur(wav)))
+
+        # 나레이션 = 자막: 구 단위 분할 + Whisper 단어 타이밍 정렬 + 키워드 강조색
+        if narr_captions:
+            exps = []
+            for (at, text, _src, cap), (_, wavf, dur) in zip(narrs, narr_files):
+                for c0, c1, ctext in sync_chunks(cap or text, wavf, dur, mode=caption_mode):
+                    # 주아체에 '…' 글리프가 없어 네모로 깨짐 → 자막에서는 제거 (음성엔 유지)
+                    ctext_clean = ctext.replace("…", "").rstrip(".").strip()
+                    # keywords 미지정 시 단일색(exp_color). 지정 시에만 키워드 구 강조
+                    color = EXP_HL if (keywords and any(k in ctext_clean for k in keywords)) \
+                        else exp_color
+                    # 앞 자막이 뒷 자막과 겹치지 않게 경계에서 0.06s 먼저 사라짐
+                    c_end = max(c0 + 0.2, c1 - 0.06)
+                    exps.append((at + c0, at + c_end, ctext_clean, color))
+            # 나레이션 사이 전역 겹침 방지: 마지막 자막의 여운이 다음 나레이션
+            # 첫 자막을 침범하면 다음 시작 직전까지로 잘라낸다
+            exps.sort(key=lambda e: e[0])
+            for i in range(len(exps) - 1):
+                t0, t1, txt, col = exps[i]
+                nxt = exps[i + 1][0]
+                if t1 > nxt - 0.05:
+                    exps[i] = (t0, max(t0 + 0.2, nxt - 0.05), txt, col)
+
+        # ── 비디오/오디오 세그먼트
+        inputs, input_idx, lines, pairs = [], {}, [], []
+        crop = f"crop={crop_val}," if crop_val else ""
+        for i, (path, a, b, spd) in enumerate(segs):
+            if path not in input_idx:
+                input_idx[path] = len(inputs)
+                inputs.append(path)
+            src = input_idx[path]
+            norm = "1080:1920" if src_portrait else "1920:1080"
+            if spd != 1.0:  # 배속 (0.5 = 슬로우모션, 오디오는 피치 유지)
+                lines.append(f"[{src}:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{spd},"
+                             f"scale={norm},setsar=1[v{i}];")
+                lines.append(f"[{src}:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={spd}[a{i}];")
+            else:
+                lines.append(f"[{src}:v]trim={a}:{b},setpts=PTS-STARTPTS,scale={norm},setsar=1[v{i}];")
+                lines.append(f"[{src}:a]atrim={a}:{b},asetpts=PTS-STARTPTS[a{i}];")
+            pairs.append(f"[v{i}][a{i}]")
+        lines.append(f"{''.join(pairs)}concat=n={len(segs)}:v=1:a=1[vc][ac];")
+
+        # 본편 → 검은 캔버스 중앙 (가로 모드는 본편 원폭 그대로 = 위아래 검은 바)
+        lines.append(f"[vc]{crop}scale={out_w}:-2,setsar=1[film];")
+        lines.append(f"color=black:s={out_w}x{out_h}:d={total:.3f}[canvas];")
+        lines.append(f"[canvas][film]overlay=0:(H-h)/2:shortest=1[base];")
+
+        vin = "base"
+        title_lines = [l for l in title.split("|") if l]
+        if wide and title_lines:  # 가로: 상단 바 한 줄
+            title_lines = [" ".join(title_lines)]
+        for li, line in enumerate(title_lines):
+            (tmp / f"title{li}.txt").write_text(line, encoding="utf-8")
+            lines.append(
+                f"[{vin}]drawtext=fontfile=fontx.otf:textfile=title{li}.txt"
+                f":fontsize={title_size}:fontcolor=white:borderw=5:bordercolor=black"
+                f":x=(w-text_w)/2:y={title_y + li * title_gap}[vtt{li}];")
+            vin = f"vtt{li}"
+
+        for si, (t0, t1, text) in enumerate(subs):
+            (tmp / f"sub{si}.txt").write_text(wrap(text, 20), encoding="utf-8")
+            lines.append(
+                f"[{vin}]drawtext=fontfile=font.ttf:textfile=sub{si}.txt"
+                f":fontsize={sub_size}:fontcolor=white:borderw=4:bordercolor=black"
+                f":line_spacing=8:x=(w-text_w)/2:y={sub_y}"
+                f":enable='between(t,{t0:.2f},{t1:.2f})'[vsub{si}];")
+            vin = f"vsub{si}"
+
+        # 나레이션 자막: 주아체(둥글둥글), 항상 1줄 — 대사(맑은고딕)와 차별화
+        for ei, exp in enumerate(exps):
+            t0, t1, text = exp[0], exp[1], exp[2]
+            color = exp[3] if len(exp) > 3 else exp_color
+            # 한 줄 우선: 화면 폭(1040px)에 맞게 글자 크기 자동 축소.
+            # 그래도 46px 미만이 필요하면 그때만 2줄 (간격 밀착)
+            fit = min(exp_size, int(1040 / max(est_units(text), 1.0)))
+            if fit >= 46:
+                out_text, fsize = text, fit
+            else:
+                out_text, fsize = wrap(text, max(8, int(1000 / exp_size))), exp_size
+            (tmp / f"exp{ei}.txt").write_text(out_text, encoding="utf-8")
+            lines.append(
+                f"[{vin}]drawtext=fontfile=fontr.ttf:textfile=exp{ei}.txt"
+                f":fontsize={fsize}:fontcolor={color}:borderw=6:bordercolor=black"
+                f":line_spacing=0:x=(w-text_w)/2:y={exp_y}"
+                f":enable='between(t,{t0:.2f},{t1:.2f})'[vexp{ei}];")
+            vin = f"vexp{ei}"
+
+        # 영화 로고 타이틀 (궁서) — 세로: 최하단 중앙 + 부제 / 가로: 우상단 코너
+        if logo:
+            (tmp / "logo.txt").write_text(logo["text"], encoding="utf-8")
+            logo_x = "w-text_w-46" if logo_right else "(w-text_w)/2"
+            lines.append(
+                f"[{vin}]drawtext=fontfile=fontn.ttf:textfile=logo.txt"
+                f":fontsize={logo_size}:fontcolor=white:borderw=6:bordercolor=black"
+                f":x={logo_x}:y={logo_y}[vlogo];")
+            vin = "vlogo"
+            if logo.get("sub") and logo_sub_on:
+                (tmp / "logosub.txt").write_text(logo["sub"], encoding="utf-8")
+                lines.append(
+                    f"[{vin}]drawtext=fontfile=fontx.otf:textfile=logosub.txt"
+                    f":fontsize={LOGO_SUB_SIZE}:fontcolor=0xBBBBBB:borderw=3:bordercolor=black"
+                    f":x=(w-text_w)/2:y={LOGO_SUB_Y}[vlogos];")
+                vin = "vlogos"
+
+        # 인물 설명 라벨 (등장인물 옆에 표시)
+        for li2, (t0, t1, text, lx, ly) in enumerate(labels):
+            (tmp / f"label{li2}.txt").write_text(text, encoding="utf-8")
+            lines.append(
+                f"[{vin}]drawtext=fontfile=fontx.otf:textfile=label{li2}.txt"
+                f":fontsize={LABEL_SIZE}:fontcolor=white:borderw=3:bordercolor=black"
+                f":box=1:boxcolor=black@0.35:boxborderw=10"
+                f":x={lx}:y={ly}:enable='between(t,{t0:.2f},{t1:.2f})'[vlab{li2}];")
+            vin = f"vlab{li2}"
+
+        # ── BGM: 원본과 먼저 믹스 (이후 나레이션 덕킹이 BGM에도 함께 적용됨)
+        if bgm:
+            bgm_path = bgm.get("path")
+            if not bgm_path:
+                lib_bgm = sorted((Path(__file__).resolve().parent / "library" / "bgm").glob("*.wav"))
+                bgm_path = str(lib_bgm[0])
+            bgm_vol = bgm.get("vol", 0.18)
+            bgm_idx = len(inputs)
+            inputs.append(bgm_path)
+            lines.append(f"[{bgm_idx}:a]volume={bgm_vol},atrim=0:{total:.3f}[bgmx];")
+            lines.append(f"[ac][bgmx]amix=inputs=2:duration=first:normalize=0[acb];")
+            lines.append(f"[acb]anull[ac2];")
+        else:
+            lines.append(f"[ac]anull[ac2];")
+
+        # ── 오디오: 나레이션 사이드체인 자동 덕킹 (성우가 말할 때만 원본이 부드럽게 내려갔다 복귀)
+        if narr_files:
+            base_idx = len(inputs)
+            narr_labels = []
+            for ni, (at, _wav, _dur) in enumerate(narr_files):
+                inputs.append(str(narr_files[ni][1]))
+                lines.append(f"[{base_idx + ni}:a]adelay={round(at * 1000)}:all=1,"
+                             f"volume={NARR_VOL}[n{ni}];")
+                narr_labels.append(f"[n{ni}]")
+            # 나레이션 버스 (전 구간 길이) → 사이드체인용/믹스용 분리
+            if len(narr_labels) > 1:
+                lines.append(f"{''.join(narr_labels)}amix=inputs={len(narr_labels)}:"
+                             f"duration=longest:normalize=0[narrbus];")
+            else:
+                lines.append(f"{narr_labels[0]}anull[narrbus];")
+            lines.append(f"[narrbus]apad=whole_dur={total:.3f},asplit=2[nsc][nmix];")
+            # 원본(+BGM)을 나레이션 신호로 덕킹 (attack/release로 자연스러운 dip·복귀)
+            lines.append(f"[ac2][nsc]sidechaincompress=threshold=0.03:ratio=12:"
+                         f"attack=20:release=400[ducked];")
+            lines.append(f"[ducked][nmix]amix=inputs=2:duration=first:normalize=0,"
+                         f"alimiter=limit=0.95[aout];")
+            amap = "[aout]"
+        else:
+            amap = "[ac2]"
+
+        (tmp / "filter.txt").write_text("\n".join(lines), encoding="utf-8")
+        cmd = [config.FFMPEG, "-y", "-v", "error"]
+        for f in inputs:
+            cmd += ["-i", f]
+        cmd += ["-filter_complex_script", str(tmp / "filter.txt"),
+                "-map", f"[{vin}]", "-map", amap,
+                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
+                output]
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=1800, cwd=str(tmp))
+        if result.returncode != 0:
+            print(result.stderr[:3000])
+            sys.exit("렌더링 실패")
+
+    out = Path(output)
+    print(f"완료: {out} ({out.stat().st_size / 1e6:.1f} MB, {total:.1f}s, "
+          f"대사 {len(subs)} / 설명 {len(exps)} / 나레이션 {len(narrs)})")
+
+
+if __name__ == "__main__":
+    main()

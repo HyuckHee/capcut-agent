@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>캡컷 에이전트</title>
+<style>
+:root { --bg:#0a0a0a; --card:#161616; --line:#262626; --tx:#e5e5e5; --dim:#8a8a8a; --acc:#22c55e; }
+* { box-sizing:border-box; margin:0; padding:0; }
+body { background:var(--bg); color:var(--tx); font-family:'Segoe UI',system-ui,sans-serif;
+       font-variant-numeric:tabular-nums; padding:32px 20px 80px; }
+.wrap { max-width:880px; margin:0 auto; }
+h1 { font-size:20px; font-weight:600; letter-spacing:-0.3px; }
+h1 .dot { display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--acc);
+          box-shadow:0 0 8px var(--acc); margin-right:10px; vertical-align:middle; }
+.sub { color:var(--dim); font-size:13px; margin-top:6px; }
+hr { border:none; border-top:1px solid var(--line); margin:24px 0; }
+.card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; margin-top:16px; }
+.card h2 { font-size:13px; font-weight:600; color:var(--dim); text-transform:uppercase;
+           letter-spacing:1px; margin-bottom:14px; }
+.chip { font-family:Consolas,monospace; font-size:12px; background:#0f0f0f; border:1px solid var(--line);
+        border-radius:5px; padding:2px 8px; color:var(--dim); }
+.presets { display:flex; gap:8px; }
+.preset { flex:1; padding:14px; border:1px solid var(--line); border-radius:8px; background:#101010;
+          cursor:pointer; text-align:center; font-size:14px; }
+.preset.on { border-color:var(--acc); color:var(--acc); }
+#drop { border:1px dashed #333; border-radius:10px; padding:34px; text-align:center; color:var(--dim);
+        font-size:14px; cursor:pointer; margin-top:16px; }
+#drop.over { border-color:var(--acc); color:var(--acc); }
+.clip { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); }
+.clip:last-child { border-bottom:none; }
+.clip img { height:44px; border-radius:5px; }
+.clip .nm { font-size:13px; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; color:var(--dim); font-weight:500; font-size:12px; padding:6px 8px; }
+td { padding:5px 8px; border-top:1px solid var(--line); }
+input, select, textarea { background:#0f0f0f; border:1px solid var(--line); color:var(--tx);
+        border-radius:6px; padding:7px 9px; font-size:13px; width:100%;
+        font-variant-numeric:tabular-nums; }
+input:focus, select:focus, textarea:focus { outline:none; border-color:var(--acc); }
+input.t { width:76px; } input.spd { width:58px; }
+button { background:#1d1d1d; border:1px solid var(--line); color:var(--tx); border-radius:6px;
+         padding:7px 14px; font-size:13px; cursor:pointer; }
+button:hover { border-color:#3a3a3a; }
+button.acc { background:var(--acc); border-color:var(--acc); color:#052e12; font-weight:600;
+             padding:12px 22px; font-size:14px; }
+button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
+.grid3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+.field label { display:block; font-size:12px; color:var(--dim); margin-bottom:5px; }
+.row2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px; }
+#steps { display:flex; flex-direction:column; gap:12px; }
+.step { display:flex; align-items:center; gap:12px; font-size:14px; color:var(--dim); }
+.step .sd { width:6px; height:6px; border-radius:50%; background:#333; flex-shrink:0; }
+.step.active { color:var(--tx); }
+.step.active .sd { background:var(--acc); box-shadow:0 0 10px var(--acc); }
+.step.done { color:var(--dim); }
+.step.done .sd { background:var(--acc); box-shadow:none; }
+#log { font-family:Consolas,monospace; font-size:12px; color:var(--dim); background:#0f0f0f;
+       border:1px solid var(--line); border-radius:6px; padding:10px 12px; margin-top:14px;
+       max-height:150px; overflow-y:auto; white-space:pre-wrap; display:none; }
+#result video { width:100%; max-width:340px; border-radius:10px; border:1px solid var(--line); margin-top:12px; }
+.stats { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1px; background:var(--line);
+         border:1px solid var(--line); border-radius:8px; overflow:hidden; margin-top:14px; }
+.stat { background:var(--card); padding:12px; text-align:center; }
+.stat b { display:block; font-size:18px; font-weight:600; }
+.stat span { font-size:11px; color:var(--dim); }
+.hint { font-size:12px; color:var(--dim); margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1><span class="dot"></span>캡컷 에이전트</h1>
+  <div class="sub">영상을 올리고 · 구간과 나레이션을 짜고 · 렌더링합니다</div>
+
+  <div class="card">
+    <h2>프리셋</h2>
+    <div class="presets">
+      <div class="preset on" data-p="wanghee">🐶 왕희 브이로그<div class="hint">문장 자막 · 왕희 목소리 · BGM</div></div>
+      <div class="preset" data-p="cinema">🎬 영화 짤<div class="hint">구 단위 자막 · 나레이션 톤</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>클립 업로드</h2>
+    <div id="drop">영상을 끌어다 놓거나 클릭해서 선택 (mp4 · mov)</div>
+    <input type="file" id="file" accept="video/*" multiple style="display:none">
+    <div id="clips"></div>
+  </div>
+
+  <div class="card">
+    <h2>세그먼트 (타임라인 순서)</h2>
+    <table id="segT"><thead><tr>
+      <th>클립</th><th>시작(s)</th><th>끝(s)</th><th>배속</th><th></th>
+    </tr></thead><tbody></tbody></table>
+    <div style="margin-top:10px"><button onclick="addSeg()">+ 세그먼트</button></div>
+    <div class="stats"><div class="stat"><b id="stSegs">0</b><span>세그먼트</span></div>
+      <div class="stat"><b id="stLen">0.0s</b><span>예상 길이</span></div>
+      <div class="stat"><b id="stNarr">0</b><span>나레이션</span></div></div>
+  </div>
+
+  <div class="card">
+    <h2>나레이션 <span class="chip">시각 = 타임라인 초</span></h2>
+    <table id="narrT"><thead><tr><th style="width:90px">시각(s)</th><th>대사 (말끝 … 가능 · 자막은 문장별 자동 싱크)</th><th></th></tr></thead><tbody></tbody></table>
+    <div style="margin-top:10px"><button onclick="addNarr()">+ 나레이션</button></div>
+  </div>
+
+  <div class="card">
+    <h2>설정</h2>
+    <div class="grid3">
+      <div class="field"><label>음성</label><select id="voice"></select></div>
+      <div class="field"><label>BGM</label><select id="bgm"><option value="">없음</option></select></div>
+      <div class="field"><label>BGM 볼륨</label><input id="bgmVol" value="0.15"></div>
+    </div>
+    <div class="row2">
+      <div class="field"><label>상단 제목 (비우면 없음 · | = 줄바꿈)</label><input id="title" placeholder="집온지 4일차 : 왕희의 하루"></div>
+      <div class="field"><label>출력 파일명</label><input id="outName" placeholder="집온지 4일차_쇼츠"></div>
+    </div>
+  </div>
+
+  <hr>
+  <button class="acc" onclick="render()">렌더링 시작</button>
+
+  <div class="card" id="progress" style="display:none">
+    <h2>진행</h2>
+    <div id="steps">
+      <div class="step" data-s="0"><div class="sd"></div>스펙 구성</div>
+      <div class="step" data-s="1"><div class="sd"></div>나레이션 합성 · 자막 싱크</div>
+      <div class="step" data-s="2"><div class="sd"></div>렌더링</div>
+      <div class="step" data-s="3"><div class="sd"></div>완료</div>
+    </div>
+    <div id="log"></div>
+    <div id="result"></div>
+  </div>
+</div>
+
+<script>
+let clips = [], segs = [], preset = "wanghee";
+
+const $ = s => document.querySelector(s);
+
+document.querySelectorAll(".preset").forEach(el => el.onclick = () => {
+  document.querySelectorAll(".preset").forEach(e => e.classList.remove("on"));
+  el.classList.add("on"); preset = el.dataset.p;
+  $("#voice").value = preset === "wanghee" ? "tc_65fbe54e2668bc4ddbd8b2a6" : "tc_68257f68bc6e3c161ab5078d";
+});
+
+async function loadOpts() {
+  const vs = await (await fetch("/api/voices")).json();
+  $("#voice").innerHTML = vs.map(v => `<option value="${v.id}">${v.name}</option>`).join("");
+  const bs = await (await fetch("/api/bgms")).json();
+  $("#bgm").innerHTML = '<option value="">없음</option>' +
+    bs.map(b => `<option value="${b.path}">${b.name}</option>`).join("");
+  const pz = bs.find(b => b.name.includes("pizzicato"));
+  if (pz) $("#bgm").value = pz.path;
+}
+loadOpts();
+
+const drop = $("#drop");
+drop.onclick = () => $("#file").click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); upload(e.dataTransfer.files); };
+$("#file").onchange = e => upload(e.target.files);
+
+async function upload(files) {
+  for (const f of files) {
+    drop.textContent = `업로드 중… ${f.name}`;
+    const fd = new FormData(); fd.append("file", f);
+    const clip = await (await fetch("/api/upload", { method: "POST", body: fd })).json();
+    clips.push(clip); renderClips();
+  }
+  drop.textContent = "영상을 끌어다 놓거나 클릭해서 선택 (mp4 · mov)";
+}
+
+function renderClips() {
+  $("#clips").innerHTML = clips.map(c =>
+    `<div class="clip"><img src="${c.thumb}"><div class="nm">${c.name}</div>
+     <span class="chip">${c.duration}s</span><span class="chip">${c.portrait ? "세로" : "가로"}</span>
+     <button class="mini" onclick="addSeg('${c.id}')">+ 구간</button></div>`).join("");
+  refreshSegSelects();
+}
+
+function addSeg(clipId) {
+  const c = clips.find(x => x.id === clipId) || clips[0];
+  if (!c) return alert("먼저 영상을 업로드하세요");
+  segs.push({ clip: c.id, a: 0, b: Math.min(c.duration, 6), spd: 1 });
+  renderSegs();
+}
+
+function renderSegs() {
+  $("#segT tbody").innerHTML = segs.map((s, i) => `<tr>
+    <td><select onchange="segs[${i}].clip=this.value" data-i="${i}" class="clipSel"></select></td>
+    <td><input class="t" value="${s.a}" onchange="segs[${i}].a=parseFloat(this.value)||0; stats()"></td>
+    <td><input class="t" value="${s.b}" onchange="segs[${i}].b=parseFloat(this.value)||0; stats()"></td>
+    <td><input class="spd" value="${s.spd}" onchange="segs[${i}].spd=parseFloat(this.value)||1; stats()"></td>
+    <td style="white-space:nowrap">
+      <button class="mini" onclick="mv(${i},-1)">↑</button>
+      <button class="mini" onclick="mv(${i},1)">↓</button>
+      <button class="mini" onclick="segs.splice(${i},1);renderSegs()">✕</button></td>
+  </tr>`).join("");
+  refreshSegSelects(); stats();
+}
+
+function refreshSegSelects() {
+  document.querySelectorAll(".clipSel").forEach(sel => {
+    const i = +sel.dataset.i;
+    sel.innerHTML = clips.map(c =>
+      `<option value="${c.id}" ${segs[i] && segs[i].clip === c.id ? "selected" : ""}>${c.name}</option>`).join("");
+  });
+}
+
+function mv(i, d) {
+  const j = i + d; if (j < 0 || j >= segs.length) return;
+  [segs[i], segs[j]] = [segs[j], segs[i]]; renderSegs();
+}
+
+let narrs = [];
+function addNarr() { narrs.push({ at: 0, text: "" }); renderNarrs(); }
+function renderNarrs() {
+  $("#narrT tbody").innerHTML = narrs.map((n, i) => `<tr>
+    <td><input class="t" value="${n.at}" onchange="narrs[${i}].at=parseFloat(this.value)||0"></td>
+    <td><input value="${n.text.replace(/"/g, "&quot;")}" onchange="narrs[${i}].text=this.value"></td>
+    <td><button class="mini" onclick="narrs.splice(${i},1);renderNarrs()">✕</button></td>
+  </tr>`).join(""); stats();
+}
+
+function stats() {
+  $("#stSegs").textContent = segs.length;
+  $("#stNarr").textContent = narrs.length;
+  const len = segs.reduce((t, s) => t + Math.max(0, (s.b - s.a) / (s.spd || 1)), 0);
+  $("#stLen").textContent = len.toFixed(1) + "s";
+}
+
+function buildSpec() {
+  const first = clips.find(c => c.id === (segs[0] || {}).clip);
+  const spec = {
+    video: first ? first.path : "",
+    src_portrait: first ? first.portrait : true,
+    title: $("#title").value.trim(),
+    voice: $("#voice").value,
+    narr_captions: true,
+    narr_warm: !$("#voice").value.startsWith("tc_"),
+    caption_mode: preset === "wanghee" ? "sentence" : "chunk",
+    exp_color: preset === "wanghee" ? "0xFFD400" : "white",
+    exp_size: preset === "wanghee" ? 75 : 50,
+    exp_y: preset === "wanghee" ? 1540 : 1255,
+    keywords: [], subs: [], exps: [], labels: [],
+    segs: segs.map(s => {
+      const c = clips.find(x => x.id === s.clip);
+      return [c.path, s.a, s.b, s.spd || 1];
+    }),
+    narrs: narrs.filter(n => n.text.trim()).map(n => [n.at, n.text.trim()]),
+  };
+  if ($("#bgm").value) spec.bgm = { path: $("#bgm").value, vol: parseFloat($("#bgmVol").value) || 0.15 };
+  return spec;
+}
+
+let stepTimer = null;
+function setStep(n) {
+  document.querySelectorAll(".step").forEach(el => {
+    const s = +el.dataset.s;
+    el.classList.toggle("done", s < n);
+    el.classList.toggle("active", s === n);
+  });
+}
+
+async function render() {
+  if (!segs.length) return alert("세그먼트를 추가하세요");
+  $("#progress").style.display = "block";
+  $("#result").innerHTML = ""; $("#log").style.display = "none"; $("#log").textContent = "";
+  setStep(0);
+  const t0 = Date.now();
+  const res = await (await fetch("/api/render", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ spec: buildSpec(), output_name: $("#outName").value }),
+  })).json();
+  setTimeout(() => setStep(1), 500);  // 단계 최소 가시화
+  const ev = new EventSource(`/api/events/${res.job}`);
+  ev.onmessage = e => {
+    const m = e.data;
+    if (m.startsWith("LOG:")) {
+      $("#log").style.display = "block";
+      $("#log").textContent += m.slice(4) + "\n";
+      $("#log").scrollTop = 99999;
+      if (m.includes("나레이션")) {
+        clearTimeout(stepTimer);
+        stepTimer = setTimeout(() => setStep(2), 1500);  // 합성 끝나면 렌더링 단계로
+      }
+    } else if (m.startsWith("DONE:")) {
+      setStep(4);
+      const secs = ((Date.now() - t0) / 1000).toFixed(0);
+      $("#result").innerHTML =
+        `<div class="hint" style="margin-top:14px">완료 · ${secs}초 · <span class="chip">${m.slice(5)}</span></div>
+         <video controls src="/api/video?path=${encodeURIComponent(m.slice(5))}"></video>`;
+      ev.close();
+    } else if (m.startsWith("ERR:")) {
+      $("#log").style.display = "block";
+      $("#log").textContent += "\n⛔ " + m.slice(4);
+      ev.close();
+    }
+  };
+}
+</script>
+</body>
+</html>
