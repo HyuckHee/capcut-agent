@@ -7,6 +7,11 @@ set "CC="
 for /f "delims=" %%d in ('dir /b /ad /o-n "%APPDATA%\Claude\claude-code" 2^>nul') do (
   if not defined CC set "CC=%APPDATA%\Claude\claude-code\%%d\claude.exe"
 )
+if not defined CC for /d %%p in ("%LOCALAPPDATA%\Packages\Claude_*") do (
+  for /f "delims=" %%d in ('dir /b /ad /o-n "%%p\LocalCache\Roaming\Claude\claude-code" 2^>nul') do (
+    if not defined CC set "CC=%%p\LocalCache\Roaming\Claude\claude-code\%%d\claude.exe"
+  )
+)
 if not defined CC (
   echo Claude CLI를 찾지 못했습니다. Claude 데스크톱 앱이 설치되어 있는지 확인하세요.
   pause & exit /b 1

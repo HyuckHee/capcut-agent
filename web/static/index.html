@@ -85,7 +85,7 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
 
   <div class="card" id="uploadCard" style="opacity:.35; pointer-events:none">
     <h2>클립 업로드 <span class="chip" id="stChip">폴더 -</span>
-      <button class="mini" onclick="cleanupStorage()" style="margin-left:6px">이전 파일 정리</button></h2>
+      <span class="hint" style="margin-left:6px">지난 업로드는 자동 복원 · ✕로 파일까지 삭제</span></h2>
     <div id="drop">영상을 끌어다 놓거나 클릭해서 선택 (mp4 · mov)</div>
     <input type="file" id="file" accept="video/*" multiple style="display:none">
     <div id="clips"></div>
@@ -280,10 +280,6 @@ async function refreshStorage() {
   const s = await (await fetch("/api/storage")).json();
   $("#stChip").textContent = `폴더 ${s.mb} MB · ${s.files}개`;
 }
-async function cleanupStorage() {
-  const s = await (await fetch("/api/storage/cleanup", { method: "POST" })).json();
-  $("#stChip").textContent = `폴더 ${s.mb} MB · ${s.files}개 (${s.removed}개 삭제)`;
-}
 refreshStorage();
 
 async function loadOpts() {
@@ -320,9 +316,27 @@ function renderClips() {
     `<div class="clip"><img src="${c.thumb}"><div class="nm">${c.name}</div>
      <span class="chip">${c.duration}s</span><span class="chip">${c.portrait ? "세로" : "가로"}</span>
      <button class="mini" onclick="playClip('${c.id}')" style="color:var(--acc)">▶ 재생</button>
-     <button class="mini" onclick="addSeg('${c.id}')">+ 구간</button></div>`).join("");
+     <button class="mini" onclick="addSeg('${c.id}')">+ 구간</button>
+     <button class="mini" onclick="delClip('${c.id}')">✕</button></div>`).join("");
   refreshSegSelects();
 }
+
+async function delClip(clipId) {
+  const c = clips.find(x => x.id === clipId);
+  if (!confirm(`'${c ? c.name : clipId}' 영상 파일을 삭제할까요? (되돌릴 수 없음)`)) return;
+  await fetch(`/api/clip/${clipId}`, { method: "DELETE" });
+  clips = clips.filter(x => x.id !== clipId);
+  segs = segs.filter(s => s.clip !== clipId);
+  if (plClipId === clipId) { pl.pause(); $("#playerCard").style.display = "none"; plClipId = null; }
+  selSeg = -1;
+  renderClips(); renderSegs(); updateSelInfo(); refreshStorage();
+}
+
+async function loadClips() {  // 서버 재시작 후에도 지난 업로드 복원
+  clips = await (await fetch("/api/clips")).json();
+  if (clips.length) renderClips();
+}
+loadClips();
 
 function addSeg(clipId) {
   const c = clips.find(x => x.id === clipId) || clips[0];

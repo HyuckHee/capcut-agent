@@ -22,11 +22,15 @@ def find_claude() -> str | None:
     exe = shutil.which("claude")
     if exe:
         return exe
-    # 데스크톱 앱 번들 CLI (버전 폴더가 갱신되므로 최신 버전 선택)
+    # 데스크톱 앱 번들 CLI. 앱은 MSIX 패키지라 Roaming\Claude 경로는 앱 내부에서만 보이고,
+    # 일반 프로세스(웹 서버 등)에서는 Packages\...\LocalCache 실제 경로로 접근해야 한다.
     import os
-    bundle = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code"
-    cands = sorted(bundle.glob("*/claude.exe"),
-                   key=lambda p: [int(x) for x in re.findall(r"\d+", p.parent.name)] or [0])
+    roots = [Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code"]
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    roots += [p / "LocalCache" / "Roaming" / "Claude" / "claude-code"
+              for p in local.glob("Packages/Claude_*")]
+    cands = [c for r in roots for c in r.glob("*/claude.exe")]
+    cands.sort(key=lambda p: [int(x) for x in re.findall(r"\d+", p.parent.name)] or [0])
     return str(cands[-1]) if cands else None
 
 

@@ -49,11 +49,12 @@ def probe(path: Path) -> dict:
 def make_thumb(path: Path, clip_id: str, duration: float) -> tuple[str, bool]:
     """10프레임 스트립 생성. (썸네일 상대경로, 세로여부) 반환 — 세로 판정은 디코딩 결과 기준."""
     thumb = THUMB_DIR / f"{clip_id}.jpg"
-    fps = max(10 / duration, 0.05)
-    subprocess.run(
-        [config.FFMPEG, "-y", "-v", "error", "-i", str(path),
-         "-vf", f"fps={fps},scale=150:-2,tile=10x1", "-frames:v", "1", str(thumb)],
-        capture_output=True, timeout=300, check=True)
+    if not thumb.exists():  # 재시작 복원 시 재생성 생략
+        fps = max(10 / duration, 0.05)
+        subprocess.run(
+            [config.FFMPEG, "-y", "-v", "error", "-i", str(path),
+             "-vf", f"fps={fps},scale=150:-2,tile=10x1", "-frames:v", "1", str(thumb)],
+            capture_output=True, timeout=300, check=True)
     out = subprocess.run(
         [config.FFPROBE, "-v", "error", "-select_streams", "v:0",
          "-show_entries", "stream=width,height", "-of", "csv=p=0", str(thumb)],
@@ -63,6 +64,39 @@ def make_thumb(path: Path, clip_id: str, duration: float) -> tuple[str, bool]:
     return f"thumbs/{clip_id}.jpg", portrait
 
 
+def register_clip(dest: Path, orig_name: str) -> dict:
+    """클립을 CLIPS에 등록하고 사이드카 메타를 남긴다 (서버 재시작 후 복원용)."""
+    clip_id = dest.stem
+    info = probe(dest)
+    thumb, portrait = make_thumb(dest, clip_id, info["duration"])
+    c = {"id": clip_id, "name": orig_name, "path": str(dest),
+         "duration": round(info["duration"], 1), "thumb": thumb, "portrait": portrait}
+    CLIPS[clip_id] = c
+    (UPLOAD_DIR / f"{clip_id}.json").write_text(
+        json.dumps(c, ensure_ascii=False), encoding="utf-8")
+    return c
+
+
+def restore_clips() -> None:
+    """웹업로드 폴더를 훑어 지난 세션 업로드를 복원한다."""
+    for meta in UPLOAD_DIR.glob("*.json"):
+        try:
+            c = json.loads(meta.read_text(encoding="utf-8"))
+            if Path(c["path"]).exists():
+                CLIPS[c["id"]] = c
+        except Exception:
+            pass
+    for f in UPLOAD_DIR.glob("*.mp4"):
+        if f.stem not in CLIPS:  # 사이드카 없던 구버전 업로드
+            try:
+                register_clip(f, f.name)
+            except Exception:
+                pass
+
+
+restore_clips()
+
+
 @app.post("/api/upload")
 async def upload(file: UploadFile = File(...)):
     clip_id = uuid.uuid4().hex[:8]
@@ -70,12 +104,12 @@ async def upload(file: UploadFile = File(...)):
     dest = UPLOAD_DIR / f"{clip_id}{ext}"
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f)
-    info = probe(dest)
-    thumb, portrait = make_thumb(dest, clip_id, info["duration"])
-    CLIPS[clip_id] = {"id": clip_id, "name": file.filename, "path": str(dest),
-                      "duration": round(info["duration"], 1), "thumb": thumb,
-                      "portrait": portrait}
-    return CLIPS[clip_id]
+    return register_clip(dest, file.filename)
+
+
+@app.get("/api/clips")
+async def list_clips():
+    return sorted(CLIPS.values(), key=lambda c: c["id"])
 
 
 @app.get("/api/voices")
@@ -163,6 +197,7 @@ async def storage():
 async def storage_cleanup():
     """현재 세션에서 쓰지 않는 업로드 파일·썸네일 삭제."""
     keep = {Path(c["path"]).name for c in CLIPS.values()}
+    keep |= {f"{c['id']}.json" for c in CLIPS.values()}
     removed = 0
     for f in UPLOAD_DIR.glob("*"):
         if f.name not in keep:
@@ -252,6 +287,18 @@ async def clip_stream(clip_id: str):
     if not c:
         return JSONResponse({"error": "not found"}, status_code=404)
     return FileResponse(c["path"], media_type="video/mp4")
+
+
+@app.delete("/api/clip/{clip_id}")
+async def clip_delete(clip_id: str):
+    """클립 파일·사이드카·썸네일 삭제 (용량 관리)."""
+    c = CLIPS.pop(clip_id, None)
+    if not c:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    Path(c["path"]).unlink(missing_ok=True)
+    (UPLOAD_DIR / f"{clip_id}.json").unlink(missing_ok=True)
+    (THUMB_DIR / f"{clip_id}.jpg").unlink(missing_ok=True)
+    return {"ok": True}
 
 
 app.mount("/", StaticFiles(directory=Path(__file__).parent / "static", html=True), name="static")
