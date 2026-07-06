@@ -126,6 +126,54 @@ async def autodraft(payload: dict):
     return result
 
 
+from app.ai_draft import ai_draft, find_claude  # noqa: E402
+
+
+@app.post("/api/aidraft")
+async def aidraft(payload: dict):
+    """세그먼트 대표 프레임을 Claude 헤드리스에 보여주고 제목·나레이션 초안을 받는다."""
+    profile = load_profile(payload.get("profile", "wanghee"))
+    style = profile.get("ai_style", "")
+    segments = []
+    for s in payload["segments"]:
+        c = CLIPS.get(s["clip_id"])
+        if not c:
+            return JSONResponse({"error": f"클립 없음: {s['clip_id']}"}, status_code=400)
+        segments.append({"path": c["path"], "a": s["a"], "b": s["b"],
+                         "spd": s.get("spd", 1), "tags": s.get("tags", "")})
+    if not segments:
+        return JSONResponse({"error": "세그먼트가 없습니다"}, status_code=400)
+    if not find_claude():
+        return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, ai_draft, segments, style)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return result
+
+
+@app.get("/api/storage")
+async def storage():
+    files = list(UPLOAD_DIR.glob("*"))
+    return {"files": len(files), "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1)}
+
+
+@app.post("/api/storage/cleanup")
+async def storage_cleanup():
+    """현재 세션에서 쓰지 않는 업로드 파일·썸네일 삭제."""
+    keep = {Path(c["path"]).name for c in CLIPS.values()}
+    removed = 0
+    for f in UPLOAD_DIR.glob("*"):
+        if f.name not in keep:
+            f.unlink(missing_ok=True)
+            (THUMB_DIR / f"{f.stem}.jpg").unlink(missing_ok=True)
+            removed += 1
+    files = list(UPLOAD_DIR.glob("*"))
+    return {"removed": removed, "files": len(files),
+            "mb": round(sum(f.stat().st_size for f in files) / 1e6, 1)}
+
+
 def run_job(job_id: str, spec: dict):
     q = JOBS[job_id]
     try:

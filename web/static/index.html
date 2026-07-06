@@ -76,18 +76,23 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
   <div class="sub">영상을 올리고 · 구간과 나레이션을 짜고 · 렌더링합니다</div>
 
   <div class="card">
-    <h2>프리셋</h2>
+    <h2>프리셋 <span class="hint" id="presetHint">먼저 채널 유형을 선택하세요</span></h2>
     <div class="presets">
-      <div class="preset on" data-p="wanghee">🐶 왕희 브이로그<div class="hint">문장 자막 · 왕희 목소리 · BGM</div></div>
+      <div class="preset" data-p="wanghee">🐶 왕희 브이로그<div class="hint">문장 자막 · 왕희 목소리 · BGM</div></div>
       <div class="preset" data-p="cinema">🎬 영화 짤<div class="hint">구 단위 자막 · 나레이션 톤</div></div>
     </div>
   </div>
 
-  <div class="card">
-    <h2>클립 업로드</h2>
+  <div class="card" id="uploadCard" style="opacity:.35; pointer-events:none">
+    <h2>클립 업로드 <span class="chip" id="stChip">폴더 -</span>
+      <button class="mini" onclick="cleanupStorage()" style="margin-left:6px">이전 파일 정리</button></h2>
     <div id="drop">영상을 끌어다 놓거나 클릭해서 선택 (mp4 · mov)</div>
     <input type="file" id="file" accept="video/*" multiple style="display:none">
     <div id="clips"></div>
+    <div style="margin-top:12px">
+      <button onclick="oneClick()" id="ocBtn" class="acc" style="padding:10px 18px">🪄 원클릭 AI 편집</button>
+      <span class="hint" id="ocHint">구간 배치 + 제목·나레이션까지 한 번에 셋팅합니다 (확인 후 렌더링만 누르면 끝)</span>
+    </div>
   </div>
 
   <div class="card" id="playerCard" style="display:none">
@@ -140,7 +145,11 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
   <div class="card">
     <h2>나레이션 <span class="chip">시각 = 타임라인 초</span></h2>
     <table id="narrT"><thead><tr><th style="width:90px">시각(s)</th><th>대사 (말끝 … 가능 · 자막은 문장별 자동 싱크)</th><th></th></tr></thead><tbody></tbody></table>
-    <div style="margin-top:10px"><button onclick="addNarr()">+ 나레이션</button></div>
+    <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
+      <button onclick="addNarr()">+ 나레이션</button>
+      <button onclick="aiDraft()" id="anBtn" style="border-color:var(--acc); color:var(--acc)">✦ AI 나레이션·제목</button>
+      <span class="hint">Claude가 세그먼트 장면을 직접 보고 작성 (Max 구독 · 과금 없음)</span>
+    </div>
   </div>
 
   <div class="card">
@@ -173,7 +182,7 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
 </div>
 
 <script>
-let clips = [], segs = [], preset = "wanghee";
+let clips = [], segs = [], preset = null;
 
 const $ = s => document.querySelector(s);
 
@@ -181,6 +190,9 @@ document.querySelectorAll(".preset").forEach(el => el.onclick = () => {
   document.querySelectorAll(".preset").forEach(e => e.classList.remove("on"));
   el.classList.add("on"); preset = el.dataset.p;
   $("#voice").value = preset === "wanghee" ? "tc_65fbe54e2668bc4ddbd8b2a6" : "tc_68257f68bc6e3c161ab5078d";
+  $("#uploadCard").style.opacity = "1";
+  $("#uploadCard").style.pointerEvents = "auto";
+  $("#presetHint").textContent = preset === "wanghee" ? "🐶 왕희 브이로그 선택됨" : "🎬 영화 짤 선택됨";
   loadProfile();
 });
 
@@ -191,7 +203,6 @@ async function loadProfile() {
   $("#pw_min").value = p.min_seg; $("#pw_max").value = p.max_seg;
   $("#pw_ending").value = String(p.calm_ending);
 }
-loadProfile();
 
 async function saveProfile() {
   const data = {
@@ -215,7 +226,7 @@ async function autoDraft() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ clips: clips.map(c => c.id), profile: preset }),
     })).json();
-    segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: 1 }));
+    segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: 1, tags: s.tags || "" }));
     renderSegs();
     $("#adHint").textContent = `초안 ${res.segments.length}개 구간 · 합계 ${res.total}s — ` +
       res.segments.map(s => `${s.a}~${s.b}s ${s.tags || ""}`).join(" | ");
@@ -225,6 +236,55 @@ async function autoDraft() {
     btn.disabled = false; btn.textContent = "✦ AI 초안 잡기";
   }
 }
+
+// ── AI 나레이션·제목 (Claude 헤드리스 — Max 구독으로 커버, API 과금 없음)
+async function aiDraft() {
+  if (!segs.length) return alert("세그먼트가 없습니다. 먼저 구간을 잡으세요");
+  const btn = $("#anBtn");
+  btn.disabled = true; btn.textContent = "✦ Claude가 장면을 보는 중… (1~3분)";
+  try {
+    const res = await (await fetch("/api/aidraft", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: preset, segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
+    })).json();
+    if (res.error) throw res.error;
+    narrs = res.narrs; renderNarrs();
+    if (res.title) $("#title").value = res.title;
+    if (res.out_name && !$("#outName").value) $("#outName").value = res.out_name;
+    return true;
+  } catch (e) {
+    alert("AI 초안 실패: " + e);
+    return false;
+  } finally {
+    btn.disabled = false; btn.textContent = "✦ AI 나레이션·제목";
+  }
+}
+
+// ── 원클릭: 구간 배치 → 제목·나레이션까지 한 번에
+async function oneClick() {
+  if (!clips.length) return alert("먼저 영상을 업로드하세요");
+  const btn = $("#ocBtn"), hint = $("#ocHint");
+  btn.disabled = true;
+  hint.textContent = "1/2 · 신호 분석으로 구간 배치 중…";
+  await autoDraft();
+  if (!segs.length) { btn.disabled = false; hint.textContent = "구간을 찾지 못했습니다 — 프로파일 가중치를 조정해보세요"; return; }
+  hint.textContent = "2/2 · Claude가 장면을 보고 제목·나레이션 작성 중…";
+  const ok = await aiDraft();
+  btn.disabled = false;
+  hint.textContent = ok ? "✓ 셋팅 완료 — 세그먼트·나레이션 확인 후 렌더링을 누르세요"
+                        : "구간은 배치됨 — 나레이션은 수동으로 작성하세요";
+}
+
+// ── 업로드 폴더 용량
+async function refreshStorage() {
+  const s = await (await fetch("/api/storage")).json();
+  $("#stChip").textContent = `폴더 ${s.mb} MB · ${s.files}개`;
+}
+async function cleanupStorage() {
+  const s = await (await fetch("/api/storage/cleanup", { method: "POST" })).json();
+  $("#stChip").textContent = `폴더 ${s.mb} MB · ${s.files}개 (${s.removed}개 삭제)`;
+}
+refreshStorage();
 
 async function loadOpts() {
   const vs = await (await fetch("/api/voices")).json();
@@ -252,6 +312,7 @@ async function upload(files) {
     clips.push(clip); renderClips();
   }
   drop.textContent = "영상을 끌어다 놓거나 클릭해서 선택 (mp4 · mov)";
+  refreshStorage();
 }
 
 function renderClips() {
@@ -434,6 +495,7 @@ async function render() {
         stepTimer = setTimeout(() => setStep(2), 1500);  // 합성 끝나면 렌더링 단계로
       }
     } else if (m.startsWith("DONE:")) {
+      clearTimeout(stepTimer);  // 마지막 로그의 "나레이션" 매치가 단계를 되돌리는 것 방지
       setStep(4);
       const secs = ((Date.now() - t0) / 1000).toFixed(0);
       $("#result").innerHTML =
@@ -441,6 +503,7 @@ async function render() {
          <video controls src="/api/video?path=${encodeURIComponent(m.slice(5))}"></video>`;
       ev.close();
     } else if (m.startsWith("ERR:")) {
+      clearTimeout(stepTimer);
       $("#log").style.display = "block";
       $("#log").textContent += "\n⛔ " + m.slice(4);
       ev.close();
