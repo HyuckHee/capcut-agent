@@ -215,15 +215,16 @@ def main() -> None:
         subs = [(float(a), float(b), t) for a, b, t in sp.get("subs", [])]
         exps = [(float(a), float(b), t) for a, b, t in sp.get("exps", [])]
         # narrs 항목: [at, text] / [at, text, wav경로] /
-        #   {"at":.., "text": 말할 내용, "caption": 자막 텍스트('|'=수동분할), "wav": 경로}
+        #   {"at":.., "text": 말할 내용, "caption": 자막 텍스트('|'=수동분할), "wav": 경로, "vol": 배수(1.0=기본)}
         narrs = []
         for entry in sp.get("narrs", []):
             if isinstance(entry, dict):
                 narrs.append((float(entry["at"]), entry["text"],
-                              entry.get("wav"), entry.get("caption")))
+                              entry.get("wav"), entry.get("caption"),
+                              float(entry.get("vol", 1.0))))
             else:
                 wav = entry[2] if len(entry) > 2 else None
-                narrs.append((float(entry[0]), entry[1], wav, None))
+                narrs.append((float(entry[0]), entry[1], wav, None, 1.0))
         narr_captions = sp.get("narr_captions", False)
         narr_warm = sp.get("narr_warm", True)
         keywords = sp.get("keywords", [])
@@ -257,7 +258,7 @@ def main() -> None:
                             subs.append((cursor + s0 - a, cursor + s1 - a, s["text"]))
                 cursor += b - a
         exps = parse_ranges(args.exp)
-        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None)
+        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None, 1.0)
                  for s in args.narr]
         narr_captions = False
         narr_warm = True
@@ -310,7 +311,7 @@ def main() -> None:
         cache_dir = Path(__file__).resolve().parent / ".cache" / "narr"
         cache_dir.mkdir(parents=True, exist_ok=True)
         narr_files = []
-        for ni, (at, text, wavsrc, _cap) in enumerate(narrs):
+        for ni, (at, text, wavsrc, _cap, vol) in enumerate(narrs):
             wav = tmp / f"narr{ni}.wav"
             if wavsrc:  # 외부 음성 파일 직접 삽입 — 24kHz mono로 정규화
                 subprocess.run([config.FFMPEG, "-y", "-v", "error", "-i", wavsrc,
@@ -331,12 +332,12 @@ def main() -> None:
                         warm(wav, config.FFMPEG)
                     shutil.copy(wav, cached)
                     print(f"  나레이션 {ni + 1}: 새로 합성 (캐시 저장)")
-            narr_files.append((at, wav, probe_dur(wav)))
+            narr_files.append((at, wav, probe_dur(wav), vol))
 
         # 나레이션 = 자막: 구 단위 분할 + Whisper 단어 타이밍 정렬 + 키워드 강조색
         if narr_captions:
             exps = []
-            for (at, text, _src, cap), (_, wavf, dur) in zip(narrs, narr_files):
+            for (at, text, _src, cap, _vol), (_, wavf, dur, _v) in zip(narrs, narr_files):
                 for c0, c1, ctext in sync_chunks(cap or text, wavf, dur, mode=caption_mode):
                     # 주아체에 '…' 글리프가 없어 네모로 깨짐 → 자막에서는 제거 (음성엔 유지)
                     ctext_clean = ctext.replace("…", "").rstrip(".").strip()
@@ -465,10 +466,10 @@ def main() -> None:
         if narr_files:
             base_idx = len(inputs)
             narr_labels = []
-            for ni, (at, _wav, _dur) in enumerate(narr_files):
+            for ni, (at, _wav, _dur, vol) in enumerate(narr_files):
                 inputs.append(str(narr_files[ni][1]))
                 lines.append(f"[{base_idx + ni}:a]adelay={round(at * 1000)}:all=1,"
-                             f"volume={NARR_VOL}[n{ni}];")
+                             f"volume={round(NARR_VOL * vol, 3)}[n{ni}];")
                 narr_labels.append(f"[n{ni}]")
             # 나레이션 버스 (전 구간 길이) → 사이드체인용/믹스용 분리
             if len(narr_labels) > 1:

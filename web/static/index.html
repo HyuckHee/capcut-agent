@@ -144,7 +144,7 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
 
   <div class="card">
     <h2>나레이션 <span class="chip">시각 = 타임라인 초</span></h2>
-    <table id="narrT"><thead><tr><th style="width:90px">시각(s)</th><th>대사 (말끝 … 가능 · 자막은 문장별 자동 싱크)</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="narrT"><thead><tr><th style="width:80px">시각(s)</th><th>대사 (말끝 … 가능 · 자막은 문장별 자동 싱크)</th><th style="width:120px">음량</th><th></th></tr></thead><tbody></tbody></table>
     <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
       <button onclick="addNarr()">+ 나레이션</button>
       <button onclick="aiDraft()" id="anBtn" style="border-color:var(--acc); color:var(--acc)">✦ AI 나레이션·제목</button>
@@ -252,7 +252,7 @@ async function aiDraft() {
       body: JSON.stringify({ profile: preset, segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
     })).json();
     if (res.error) throw res.error;
-    narrs = res.narrs; renderNarrs();
+    narrs = res.narrs.map(n => ({ at: n.at, text: n.text, vol: 1 })); renderNarrs();
     if (res.title) $("#title").value = res.title;
     if (res.out_name && !$("#outName").value) $("#outName").value = res.out_name;
     return true;
@@ -366,10 +366,10 @@ function addSeg(clipId) {
 
 function renderSegs() {
   $("#segT tbody").innerHTML = segs.map((s, i) => `<tr class="${i === selSeg ? "sel" : ""}" onclick="selectSeg(${i})">
-    <td><select onchange="segs[${i}].clip=this.value" data-i="${i}" class="clipSel"></select></td>
-    <td><input class="t" value="${s.a}" onchange="segs[${i}].a=parseFloat(this.value)||0; stats()"></td>
-    <td><input class="t" value="${s.b}" onchange="segs[${i}].b=parseFloat(this.value)||0; stats()"></td>
-    <td><input class="spd" value="${s.spd}" onchange="segs[${i}].spd=parseFloat(this.value)||1; stats()"></td>
+    <td><select onclick="event.stopPropagation()" onchange="segs[${i}].clip=this.value" data-i="${i}" class="clipSel"></select></td>
+    <td><input class="t" type="number" step="0.1" min="0" value="${s.a}" onclick="event.stopPropagation()" onfocus="selectSeg(${i}); this.select()" onchange="setSegTime(${i},'a',this.value)"></td>
+    <td><input class="t" type="number" step="0.1" min="0" value="${s.b}" onclick="event.stopPropagation()" onfocus="selectSeg(${i}); this.select()" onchange="setSegTime(${i},'b',this.value)"></td>
+    <td><input class="spd" type="number" step="0.1" min="0.1" value="${s.spd}" onclick="event.stopPropagation()" onchange="segs[${i}].spd=parseFloat(this.value)||1; stats()"></td>
     <td style="white-space:nowrap">
       <button class="mini" onclick="event.stopPropagation(); previewSeg(${i})" style="color:var(--acc)">▶</button>
       <button class="mini" onclick="event.stopPropagation(); mv(${i},-1)">↑</button>
@@ -377,6 +377,25 @@ function renderSegs() {
       <button class="mini" onclick="event.stopPropagation(); delSeg(${i})">✕</button></td>
   </tr>`).join("");
   refreshSegSelects(); stats();
+}
+
+// 초 수동 입력: 값 검증 후 반영 (표 전체를 다시 그리지 않아 포커스 유지)
+function setSegTime(i, which, raw) {
+  let v = parseFloat(raw);
+  if (isNaN(v) || v < 0) v = 0;
+  const c = clips.find(x => x.id === segs[i].clip);
+  if (c && v > c.duration) v = c.duration;    // 영상 길이 초과 방지
+  v = Math.round(v * 10) / 10;
+  segs[i][which] = v;
+  if (segs[i].b <= segs[i].a) segs[i].b = Math.round((segs[i].a + 0.1) * 10) / 10;
+  const row = document.querySelectorAll("#segT tbody tr")[i];
+  if (row) { row.querySelectorAll(".t")[0].value = segs[i].a; row.querySelectorAll(".t")[1].value = segs[i].b; }
+  if (i === selSeg) { pl.currentTime = segs[i][which]; updateSelInfo(); }
+  stats();
+}
+
+function highlightRows() {
+  document.querySelectorAll("#segT tbody tr").forEach((tr, i) => tr.classList.toggle("sel", i === selSeg));
 }
 
 function delSeg(i) {
@@ -413,13 +432,14 @@ function loadClip(clipId) {
 }
 
 function selectSeg(i) {
+  if (selSeg === i && plClipId === segs[i].clip) { highlightRows(); return; }  // 이미 선택됨 — 입력 중 재탐색 방지
   selSeg = i; plStop = null;
   const s = segs[i];
   $("#playerCard").style.display = "";
   loadClip(s.clip);
   const seek = () => { pl.currentTime = s.a; };
   pl.readyState >= 1 ? seek() : pl.addEventListener("loadedmetadata", seek, { once: true });
-  renderSegs(); updateSelInfo();
+  highlightRows(); updateSelInfo();   // 표 전체 재렌더 대신 하이라이트만 → 입력칸 포커스 유지
 }
 
 function previewSeg(i) {
@@ -456,11 +476,15 @@ pl.addEventListener("timeupdate", () => {
 });
 
 let narrs = [];
-function addNarr() { narrs.push({ at: 0, text: "" }); renderNarrs(); }
+function addNarr() { narrs.push({ at: 0, text: "", vol: 1 }); renderNarrs(); }
 function renderNarrs() {
   $("#narrT tbody").innerHTML = narrs.map((n, i) => `<tr>
-    <td><input class="t" value="${n.at}" onchange="narrs[${i}].at=parseFloat(this.value)||0"></td>
+    <td><input class="t" type="number" step="0.1" min="0" value="${n.at}" onchange="narrs[${i}].at=parseFloat(this.value)||0"></td>
     <td><input value="${n.text.replace(/"/g, "&quot;")}" onchange="narrs[${i}].text=this.value"></td>
+    <td><div style="display:flex; align-items:center; gap:6px">
+      <input type="range" min="0" max="2" step="0.1" value="${n.vol ?? 1}" style="width:66px"
+        oninput="narrs[${i}].vol=parseFloat(this.value); this.nextElementSibling.textContent=Math.round(this.value*100)+'%'">
+      <span class="hint" style="width:38px; text-align:right">${Math.round((n.vol ?? 1) * 100)}%</span></div></td>
     <td><button class="mini" onclick="narrs.splice(${i},1);renderNarrs()">✕</button></td>
   </tr>`).join(""); stats();
 }
@@ -490,7 +514,11 @@ function buildSpec() {
       const c = clips.find(x => x.id === s.clip);
       return [c.path, s.a, s.b, s.spd || 1];
     }),
-    narrs: narrs.filter(n => n.text.trim()).map(n => [n.at, n.text.trim()]),
+    narrs: narrs.filter(n => n.text.trim()).map(n => {
+      const vol = n.vol ?? 1;
+      return vol === 1 ? [n.at, n.text.trim()]
+                       : { at: n.at, text: n.text.trim(), vol: vol };
+    }),
   };
   if ($("#bgm").value) spec.bgm = { path: $("#bgm").value, vol: parseFloat($("#bgmVol").value) || 0.15 };
   const logoText = $("#logoText").value.trim();
