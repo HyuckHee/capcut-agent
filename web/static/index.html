@@ -144,11 +144,16 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
 
   <div class="card">
     <h2>나레이션 <span class="chip">시각 = 타임라인 초</span></h2>
+    <div class="field" style="margin-bottom:12px">
+      <label>줄거리 · 맥락 (선택 · AI가 나레이션 쓸 때 참고 — 반전/결말도 적어주면 좋음)</label>
+      <textarea id="synopsis" rows="3" placeholder="예) 맹인 침술사가 사실 밤에는 눈이 보인다. 궁에서 세자 독살 현장을 목격하지만, 눈이 보인다는 걸 들키면 죽는다."
+        style="width:100%; resize:vertical; font-family:inherit; font-size:13px; line-height:1.5"></textarea>
+    </div>
     <table id="narrT"><thead><tr><th style="width:80px">시각(s)</th><th>대사 (말끝 … 가능 · 자막은 문장별 자동 싱크)</th><th style="width:120px">음량</th><th></th></tr></thead><tbody></tbody></table>
     <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
       <button onclick="addNarr()">+ 나레이션</button>
       <button onclick="aiDraft()" id="anBtn" style="border-color:var(--acc); color:var(--acc)">✦ AI 나레이션·제목</button>
-      <span class="hint">Claude가 세그먼트 장면을 직접 보고 작성 (Max 구독 · 과금 없음)</span>
+      <span class="hint">Claude가 세그먼트 장면 + 위 줄거리를 참고해 작성 (Max 구독 · 과금 없음)</span>
     </div>
   </div>
 
@@ -249,7 +254,7 @@ async function aiDraft() {
   try {
     const res = await (await fetch("/api/aidraft", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: preset, segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
+      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(), segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
     })).json();
     if (res.error) throw res.error;
     narrs = res.narrs.map(n => ({ at: n.at, text: n.text, vol: 1 })); renderNarrs();

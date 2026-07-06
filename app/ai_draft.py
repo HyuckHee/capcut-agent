@@ -57,12 +57,21 @@ def extract_frames(segments: list[dict], workdir: Path) -> list[dict]:
     return out
 
 
-def build_prompt(seg_info: list[dict], style: str, total: float) -> str:
+def build_prompt(seg_info: list[dict], style: str, total: float, synopsis: str = "") -> str:
     lines = [
         "너는 유튜브 쇼츠 편집 어시스턴트다. 아래 세그먼트별 대표 프레임 이미지를 Read 도구로 전부 확인한 뒤,",
-        "실제로 보이는 것만 근거로 제목과 나레이션을 작성해라. 보이지 않는 상황을 지어내면 안 된다.",
+        "실제로 보이는 것만 근거로 제목과 나레이션을 작성해라. 프레임에서 보이지 않는 시각적 상황을 지어내면 안 된다.",
         "",
         f"[채널 스타일]\n{style}",
+    ]
+    if synopsis:
+        lines += [
+            "",
+            "[줄거리·맥락] 사용자가 제공한 배경 정보다. 화면에 안 보이는 인물 관계·반전·결말의 근거로 삼되,",
+            "나레이션에 쓰는 장면 묘사 자체는 반드시 프레임에 보이는 것과 일치해야 한다. 복선은 반전 장면 전에 깔아라.",
+            synopsis,
+        ]
+    lines += [
         "",
         f"[타임라인] 총 {total:.0f}초, 세그먼트 {len(seg_info)}개 (시각은 완성 영상 기준):",
     ]
@@ -100,12 +109,12 @@ def run_claude(prompt: str, cwd: Path) -> dict:
     return json.loads(m.group(0))
 
 
-def ai_draft(segments: list[dict], style: str) -> dict:
+def ai_draft(segments: list[dict], style: str, synopsis: str = "") -> dict:
     """segments: [{path, a, b, spd, tags}] → {title, out_name, narrs}."""
     workdir = FRAME_DIR / uuid.uuid4().hex[:8]
     seg_info = extract_frames(segments, workdir)
     total = seg_info[-1]["out_b"] if seg_info else 0.0
-    data = run_claude(build_prompt(seg_info, style, total), workdir)
+    data = run_claude(build_prompt(seg_info, style, total, synopsis), workdir)
     narrs = [{"at": float(n["at"]), "text": str(n["text"]).strip()}
              for n in data.get("narrs", []) if str(n.get("text", "")).strip()]
     narrs.sort(key=lambda n: n["at"])
@@ -116,4 +125,5 @@ def ai_draft(segments: list[dict], style: str) -> dict:
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     spec = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-    print(json.dumps(ai_draft(spec["segments"], spec["style"]), ensure_ascii=False, indent=1))
+    print(json.dumps(ai_draft(spec["segments"], spec["style"], spec.get("synopsis", "")),
+                     ensure_ascii=False, indent=1))

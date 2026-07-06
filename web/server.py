@@ -179,9 +179,10 @@ async def aidraft(payload: dict):
         return JSONResponse({"error": "세그먼트가 없습니다"}, status_code=400)
     if not find_claude():
         return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
+    synopsis = (payload.get("synopsis") or "").strip()
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, ai_draft, segments, style)
+        result = await loop.run_in_executor(None, ai_draft, segments, style, synopsis)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return result
