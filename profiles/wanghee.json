@@ -1,0 +1,13 @@
+{
+ "_설명": "왕희 브이로그 — 발성(멍멍/앙앙) 최우선, 움직임 다음, 잔잔한 엔딩 자동 추가. 영상 만들면서 가중치를 계속 튜닝하세요.",
+ "target_len": 35,
+ "w_motion": 1.0,
+ "w_vocal": 2.5,
+ "w_silence": 1.0,
+ "min_seg": 2.0,
+ "max_seg": 9.0,
+ "pad": 0.4,
+ "silence_db": -42,
+ "silence_min": 1.2,
+ "calm_ending": true
+}

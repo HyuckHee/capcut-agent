@@ -95,6 +95,37 @@ async def bgms():
             for f in sorted((ROOT / "library" / "bgm").glob("*.wav"))]
 
 
+# ── 휴리스틱 자동 틀 + 프로파일 튜닝
+from app.auto_draft import draft, load_profile, save_profile  # noqa: E402
+
+
+@app.get("/api/profile/{name}")
+async def get_profile(name: str):
+    return load_profile(name)
+
+
+@app.put("/api/profile/{name}")
+async def put_profile(name: str, data: dict):
+    data.pop("_설명", None)
+    merged = {**load_profile(name), **data}
+    save_profile(name, merged)
+    return merged
+
+
+@app.post("/api/autodraft")
+async def autodraft(payload: dict):
+    """업로드된 클립들을 신호 분석해서 초안 세그먼트를 뽑는다 (수 분 소요 가능)."""
+    clip_ids = payload["clips"]
+    profile = load_profile(payload.get("profile", "wanghee"))
+    paths = [CLIPS[c]["path"] for c in clip_ids if c in CLIPS]
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, draft, paths, profile)
+    # clip 인덱스 → clip id로 변환
+    for seg in result["segments"]:
+        seg["clip_id"] = clip_ids[seg.pop("clip")]
+    return result
+
+
 def run_job(job_id: str, spec: dict):
     q = JOBS[job_id]
     try:

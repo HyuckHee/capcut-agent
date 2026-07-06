@@ -92,7 +92,28 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <table id="segT"><thead><tr>
       <th>클립</th><th>시작(s)</th><th>끝(s)</th><th>배속</th><th></th>
     </tr></thead><tbody></tbody></table>
-    <div style="margin-top:10px"><button onclick="addSeg()">+ 세그먼트</button></div>
+    <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
+      <button onclick="addSeg()">+ 세그먼트</button>
+      <button onclick="autoDraft()" id="adBtn" style="border-color:var(--acc); color:var(--acc)">✦ AI 초안 잡기</button>
+      <span class="hint" id="adHint">움직임·발성·무음 신호로 후보 구간을 자동 배치합니다</span>
+    </div>
+    <details style="margin-top:12px">
+      <summary class="hint" style="cursor:pointer">점수 프로파일 튜닝 (채널별 가중치 — 만들면서 계속 수정)</summary>
+      <div class="grid3" style="margin-top:10px">
+        <div class="field"><label>움직임 가중치</label><input id="pw_motion"></div>
+        <div class="field"><label>발성 가중치 (멍멍/대사)</label><input id="pw_vocal"></div>
+        <div class="field"><label>무음 페널티</label><input id="pw_silence"></div>
+      </div>
+      <div class="grid3" style="margin-top:10px">
+        <div class="field"><label>목표 길이(s)</label><input id="pw_target"></div>
+        <div class="field"><label>구간 최소~최대(s)</label><div style="display:flex;gap:6px">
+          <input id="pw_min"><input id="pw_max"></div></div>
+        <div class="field"><label>잔잔한 엔딩 자동 추가</label>
+          <select id="pw_ending"><option value="true">켜기</option><option value="false">끄기</option></select></div>
+      </div>
+      <div style="margin-top:10px"><button class="mini" onclick="saveProfile()">프로파일 저장</button>
+        <span class="hint" id="pwStatus"></span></div>
+    </details>
     <div class="stats"><div class="stat"><b id="stSegs">0</b><span>세그먼트</span></div>
       <div class="stat"><b id="stLen">0.0s</b><span>예상 길이</span></div>
       <div class="stat"><b id="stNarr">0</b><span>나레이션</span></div></div>
@@ -142,7 +163,50 @@ document.querySelectorAll(".preset").forEach(el => el.onclick = () => {
   document.querySelectorAll(".preset").forEach(e => e.classList.remove("on"));
   el.classList.add("on"); preset = el.dataset.p;
   $("#voice").value = preset === "wanghee" ? "tc_65fbe54e2668bc4ddbd8b2a6" : "tc_68257f68bc6e3c161ab5078d";
+  loadProfile();
 });
+
+async function loadProfile() {
+  const p = await (await fetch(`/api/profile/${preset}`)).json();
+  $("#pw_motion").value = p.w_motion; $("#pw_vocal").value = p.w_vocal;
+  $("#pw_silence").value = p.w_silence; $("#pw_target").value = p.target_len;
+  $("#pw_min").value = p.min_seg; $("#pw_max").value = p.max_seg;
+  $("#pw_ending").value = String(p.calm_ending);
+}
+loadProfile();
+
+async function saveProfile() {
+  const data = {
+    w_motion: parseFloat($("#pw_motion").value), w_vocal: parseFloat($("#pw_vocal").value),
+    w_silence: parseFloat($("#pw_silence").value), target_len: parseFloat($("#pw_target").value),
+    min_seg: parseFloat($("#pw_min").value), max_seg: parseFloat($("#pw_max").value),
+    calm_ending: $("#pw_ending").value === "true",
+  };
+  await fetch(`/api/profile/${preset}`, { method: "PUT",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+  $("#pwStatus").textContent = `저장됨 → profiles/${preset}.json`;
+  setTimeout(() => $("#pwStatus").textContent = "", 3000);
+}
+
+async function autoDraft() {
+  if (!clips.length) return alert("먼저 영상을 업로드하세요");
+  const btn = $("#adBtn");
+  btn.disabled = true; btn.textContent = "✦ 분석 중… (영상 길이에 따라 수 분)";
+  try {
+    const res = await (await fetch("/api/autodraft", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clips: clips.map(c => c.id), profile: preset }),
+    })).json();
+    segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: 1 }));
+    renderSegs();
+    $("#adHint").textContent = `초안 ${res.segments.length}개 구간 · 합계 ${res.total}s — ` +
+      res.segments.map(s => `${s.a}~${s.b}s ${s.tags || ""}`).join(" | ");
+  } catch (e) {
+    alert("분석 실패: " + e);
+  } finally {
+    btn.disabled = false; btn.textContent = "✦ AI 초안 잡기";
+  }
+}
 
 async function loadOpts() {
   const vs = await (await fetch("/api/voices")).json();

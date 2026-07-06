@@ -1,0 +1,13 @@
+{
+ "_설명": "영화 짤 — 대사(사람 목소리=발성 감지) 중심, 무음 페널티 강하게, 구간을 길게 유지. 쇼츠는 59초 한도 주의.",
+ "target_len": 52,
+ "w_motion": 0.5,
+ "w_vocal": 2.0,
+ "w_silence": 1.5,
+ "min_seg": 3.0,
+ "max_seg": 15.0,
+ "pad": 0.5,
+ "silence_db": -45,
+ "silence_min": 1.5,
+ "calm_ending": false
+}
