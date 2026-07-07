@@ -276,10 +276,14 @@ async def render(payload: dict):
     if title_out.lower().endswith(".mp4"):
         title_out = title_out[:-4]
     spec = payload["spec"]
+    is_preview = bool(payload.get("preview"))
+    if is_preview:
+        spec["preview"] = True
+        title_out += "_미리보기"   # 최종 파일과 겹치지 않게 (덮어써도 무방)
     spec["output"] = str(OUTPUT_DIR / f"{title_out}.mp4")
     JOBS[job_id] = queue.Queue()
     threading.Thread(target=run_job, args=(job_id, spec), daemon=True).start()
-    return {"job": job_id, "output": spec["output"]}
+    return {"job": job_id, "output": spec["output"], "preview": is_preview}
 
 
 @app.get("/api/events/{job_id}")

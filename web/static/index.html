@@ -178,7 +178,11 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
   </div>
 
   <hr>
-  <button class="acc" onclick="render()">렌더링 시작</button>
+  <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap">
+    <button onclick="render(true)" id="pvBtn" style="border-color:var(--acc); color:var(--acc)">👁 빠른 미리보기</button>
+    <button class="acc" onclick="render(false)" id="rdBtn">렌더링 시작</button>
+    <span class="hint">미리보기 = 절반 화질로 빠르게 확인 (나레이션·자막 타이밍 점검용). 확정되면 렌더링 시작</span>
+  </div>
 
   <div class="card" id="progress" style="display:none">
     <h2>진행</h2>
@@ -599,19 +603,24 @@ function setStep(n) {
   });
 }
 
-async function render() {
+async function render(preview) {
   if (!preset) return alert("프리셋을 먼저 선택하세요");
   if (!$("#voice").value) return alert("음성을 선택하세요");
   if (!segs.length) return alert("세그먼트를 추가하세요");
+  const btn = preview ? $("#pvBtn") : $("#rdBtn");
+  const btnLabel = btn.textContent;
+  $("#pvBtn").disabled = true; $("#rdBtn").disabled = true;
+  btn.textContent = preview ? "👁 미리보기 생성 중…" : "렌더링 중…";
   $("#progress").style.display = "block";
   $("#result").innerHTML = ""; $("#log").style.display = "none"; $("#log").textContent = "";
   setStep(0);
   const t0 = Date.now();
   const res = await (await fetch("/api/render", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ spec: buildSpec(), output_name: $("#outName").value }),
+    body: JSON.stringify({ spec: buildSpec(), output_name: $("#outName").value, preview: !!preview }),
   })).json();
   setTimeout(() => setStep(1), 500);  // 단계 최소 가시화
+  const restore = () => { $("#pvBtn").disabled = false; $("#rdBtn").disabled = false; btn.textContent = btnLabel; };
   const ev = new EventSource(`/api/events/${res.job}`);
   ev.onmessage = e => {
     const m = e.data;
@@ -627,14 +636,18 @@ async function render() {
       clearTimeout(stepTimer);  // 마지막 로그의 "나레이션" 매치가 단계를 되돌리는 것 방지
       setStep(4);
       const secs = ((Date.now() - t0) / 1000).toFixed(0);
+      const tag = preview ? "👁 미리보기 (절반 화질) · " : "완료 · ";
       $("#result").innerHTML =
-        `<div class="hint" style="margin-top:14px">완료 · ${secs}초 · <span class="chip">${m.slice(5)}</span></div>
-         <video controls src="/api/video?path=${encodeURIComponent(m.slice(5))}"></video>`;
+        `<div class="hint" style="margin-top:14px">${tag}${secs}초 · <span class="chip">${m.slice(5)}</span>` +
+        (preview ? ` — 나레이션을 고치고 다시 미리보기하거나, 확정되면 <b>렌더링 시작</b>` : "") + `</div>
+         <video controls autoplay src="/api/video?path=${encodeURIComponent(m.slice(5))}"></video>`;
+      restore();
       ev.close();
     } else if (m.startsWith("ERR:")) {
       clearTimeout(stepTimer);
       $("#log").style.display = "block";
       $("#log").textContent += "\n⛔ " + m.slice(4);
+      restore();
       ev.close();
     }
   };

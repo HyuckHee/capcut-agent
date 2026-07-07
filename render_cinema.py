@@ -235,6 +235,7 @@ def main() -> None:
         wide = sp.get("aspect") == "wide"  # 가로 16:9 (롱폼용)
         src_portrait = sp.get("src_portrait", False)  # 세로 촬영 소스 → 풀스크린
         bgm = sp.get("bgm")              # {"path": wav(생략시 라이브러리 첫 곡), "vol": 0.18}
+        preview = sp.get("preview", False)  # 빠른 미리보기: 절반 해상도 + ultrafast 인코딩
     else:
         video, output, crop_val = args.video, args.output, args.crop
         title, voice, rate, pitch = args.title, args.voice, args.narr_rate, args.narr_pitch
@@ -270,6 +271,7 @@ def main() -> None:
         wide = False
         src_portrait = False
         bgm = None
+        preview = False
 
     total = sum((b - a) / spd for _, a, b, spd in segs)
     subs.sort()
@@ -335,10 +337,23 @@ def main() -> None:
             narr_files.append((at, wav, probe_dur(wav), vol))
 
         # 나레이션 = 자막: 구 단위 분할 + Whisper 단어 타이밍 정렬 + 키워드 강조색
+        # 자막 싱크(whisper)는 (문구|모드|음성wav)가 같으면 재사용 → 반복 미리보기/재렌더 시 whisper 생략
+        sync_cache = Path(__file__).resolve().parent / ".cache" / "narrsync"
+        sync_cache.mkdir(parents=True, exist_ok=True)
+
+        def cached_sync(txt, wavf, dur, mode):
+            h = hashlib.sha1(f"{mode}|{txt}|".encode("utf-8") + wavf.read_bytes()).hexdigest()[:16]
+            cf = sync_cache / f"{h}.json"
+            if cf.exists():
+                return json.loads(cf.read_text(encoding="utf-8"))
+            chunks = sync_chunks(txt, wavf, dur, mode=mode)
+            cf.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+            return chunks
+
         if narr_captions:
             exps = []
             for (at, text, _src, cap, _vol), (_, wavf, dur, _v) in zip(narrs, narr_files):
-                for c0, c1, ctext in sync_chunks(cap or text, wavf, dur, mode=caption_mode):
+                for c0, c1, ctext in cached_sync(cap or text, wavf, dur, caption_mode):
                     # 주아체에 '…' 글리프가 없어 네모로 깨짐 → 자막에서는 제거 (음성엔 유지)
                     ctext_clean = ctext.replace("…", "").rstrip(".").strip()
                     # keywords 미지정 시 단일색(exp_color). 지정 시에만 키워드 구 강조
@@ -487,13 +502,21 @@ def main() -> None:
         else:
             amap = "[ac2]"
 
+        # 빠른 미리보기: 레이아웃(1080 기준 좌표)은 그대로 그리고 마지막에 절반 축소 → 인코딩 부담↓
+        if preview:
+            pw, ph = (out_w // 2) & ~1, (out_h // 2) & ~1  # 짝수 보정
+            lines.append(f"[{vin}]scale={pw}:{ph}[vpv];")
+            vin = "vpv"
+
         (tmp / "filter.txt").write_text("\n".join(lines), encoding="utf-8")
         cmd = [config.FFMPEG, "-y", "-v", "error"]
         for f in inputs:
             cmd += ["-i", f]
+        v_opts = (["-preset", "ultrafast", "-crf", "30"] if preview
+                  else ["-preset", "medium", "-crf", "18"])
         cmd += ["-filter_complex_script", str(tmp / "filter.txt"),
                 "-map", f"[{vin}]", "-map", amap,
-                "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+                "-c:v", "libx264", *v_opts,
                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart",
                 output]
         result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
