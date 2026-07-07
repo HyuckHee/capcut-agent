@@ -19,3 +19,6 @@ web/static/thumbs/
 
 # 기타
 *.log
+
+# 사용 데이터 로그 (말풍선 학습용 등 — 로컬 전용)
+logs/

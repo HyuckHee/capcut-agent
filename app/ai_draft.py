@@ -224,6 +224,130 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "") -> dict:
     return result
 
 
+# ── AI 말풍선: Claude가 순간+대사를 정하고, 피사체 추적이 좌표를 찍는다
+BUBBLE_LOG = ROOT / "logs" / "bubbles.jsonl"
+
+
+def log_bubbles(source: str, items: list[dict]) -> None:
+    """말풍선 사용 로그 적재 — source: 'ai'(제안) / 'final'(렌더에 실제 사용).
+
+    final 로그는 다음 AI 제안의 few-shot 예시가 되어 쓸수록 채널 말투에 수렴한다.
+    """
+    if not items:
+        return
+    BUBBLE_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with BUBBLE_LOG.open("a", encoding="utf-8") as f:
+        for it in items:
+            f.write(json.dumps({"source": source, **it}, ensure_ascii=False) + "\n")
+
+
+def _bubble_examples(limit: int = 14) -> list[dict]:
+    """최근 확정(final) 말풍선 — AI 프롬프트 few-shot용."""
+    if not BUBBLE_LOG.exists():
+        return []
+    out = []
+    for ln in BUBBLE_LOG.read_text(encoding="utf-8").splitlines():
+        try:
+            d = json.loads(ln)
+        except json.JSONDecodeError:
+            continue
+        if d.get("source") == "final" and d.get("text"):
+            out.append(d)
+    return out[-limit:]
+
+
+def bubble_prompt(montages: list[dict], style: str, synopsis: str,
+                  total: float, examples: list[dict]) -> str:
+    lines = [
+        "너는 반려동물 쇼츠의 말풍선 자막 작가다. 아래 몽타주 이미지를 Read 도구로 전부 확인해라.",
+        "각 칸 좌상단의 노란 숫자는 완성 영상 기준 시각(초)이다.",
+        "",
+        "[몽타주]",
+    ]
+    for m in montages:
+        lines.append(f"- {m['name']} (칸별 시각: {', '.join(str(s) for s in m['stamps'])}초)")
+    lines += [
+        "",
+        f"[채널 스타일]\n{style}",
+    ]
+    if synopsis:
+        lines += ["", "[맥락]", synopsis]
+    if examples:
+        lines += ["", "[이 채널에서 실제 사용된 말풍선 예시 — 말투·길이를 여기에 맞춰라]"]
+        for e in examples:
+            lines.append(f"- \"{e['text']}\"")
+    lines += [
+        "",
+        "[임무] 화면에서 실제로 보이는 행동에 맞춰 말풍선을 제안해라.",
+        "- 강아지 1인칭 짧은 대사(예: 내 인형이야!) 또는 효과음(예: 앙!, 킁킁, 쿨쿨)",
+        "- 텍스트 2~8자, 이모지·특수문자 금지 (폰트 미지원)",
+        f"- 개수는 {max(2, int(total // 8))}~{max(3, int(total // 5))}개, 서로 3초 이상 간격",
+        "- at은 그 행동이 보이는 시각, dur은 1.5~2.5초",
+        "- 보이지 않는 행동을 지어내지 말 것",
+        "",
+        "아래 JSON만 출력해라:",
+        '{"bubbles": [{"at": 3.2, "dur": 1.8, "text": "앙!"}]}',
+    ]
+    return "\n".join(lines)
+
+
+def _out_to_src(segments: list[dict], t: float) -> tuple[dict, float]:
+    """완성영상 시각 → (세그먼트, 원본 시각)."""
+    cursor = 0.0
+    for s in segments:
+        spd = s.get("spd") or 1
+        length = (s["b"] - s["a"]) / spd
+        if t < cursor + length or s is segments[-1]:
+            return s, s["a"] + max(0.0, min(t - cursor, length)) * spd
+        cursor += length
+    return segments[-1], segments[-1]["b"]
+
+
+def ai_bubbles(segments: list[dict], style: str, synopsis: str = "") -> dict:
+    """segments → {bubbles:[{a,b,text,fx,fy}]}. 텍스트·시각은 Claude, 좌표는 피사체 추적."""
+    from .track_subject import track
+
+    workdir = FRAME_DIR / ("bub_" + uuid.uuid4().hex[:8])
+    montages, total = build_montages(segments, workdir)
+    data = run_claude(
+        bubble_prompt(montages, style, synopsis, total, _bubble_examples()), workdir)
+
+    track_cache: dict[int, list] = {}
+    bubbles = []
+    for b in data.get("bubbles", []):
+        at = float(b.get("at", 0))
+        dur = min(2.5, max(1.2, float(b.get("dur", 1.8))))
+        text = str(b.get("text", "")).strip()
+        if not text or at >= total:
+            continue
+        seg, src_t = _out_to_src(segments, at + dur / 2)  # 표시 구간 중간 시점의 피사체 위치
+        si = segments.index(seg)
+        if si not in track_cache:
+            try:
+                track_cache[si] = track(seg["path"], seg["a"], seg["b"])
+            except Exception:
+                track_cache[si] = [(0.0, 0.5, 0.6)]
+        knots = track_cache[si]
+        rel = src_t - seg["a"]
+        # 절점 선형보간으로 피사체 중심 → 머리 위쪽에 오프셋
+        cx, cy = knots[-1][1], knots[-1][2]
+        for (t0, x0, y0), (t1, x1, y1) in zip(knots, knots[1:]):
+            if t0 <= rel <= t1:
+                r = (rel - t0) / max(1e-6, t1 - t0)
+                cx, cy = x0 + (x1 - x0) * r, y0 + (y1 - y0) * r
+                break
+        else:
+            if rel < knots[0][0]:
+                cx, cy = knots[0][1], knots[0][2]
+        fx = min(0.85, max(0.15, cx))          # 텍스트가 화면 밖으로 안 잘리게
+        fy = min(0.80, max(0.10, cy - 0.11))   # 피사체 위쪽
+        bubbles.append({"a": round(at, 1), "b": round(min(total, at + dur), 1),
+                        "text": text, "fx": round(fx, 3), "fy": round(fy, 3)})
+    bubbles.sort(key=lambda x: x["a"])
+    log_bubbles("ai", bubbles)
+    return {"bubbles": bubbles}
+
+
 def recommend_prompt(clip_montages: list[dict], synopsis: str, style: str,
                      target_len: float, max_len: float) -> str:
     """원본 전체 관찰 몽타주 + 줄거리 → 편집 구간 추천 프롬프트."""

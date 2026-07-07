@@ -160,7 +160,31 @@ async def autodraft(payload: dict):
     return result
 
 
-from app.ai_draft import ai_draft, recommend_edit, find_claude  # noqa: E402
+from app.ai_draft import ai_draft, ai_bubbles, recommend_edit, find_claude, log_bubbles  # noqa: E402
+
+
+@app.post("/api/aibubbles")
+async def aibubbles(payload: dict):
+    """세그먼트 편집본을 관찰해 말풍선(시각·대사)을 제안 — 좌표는 피사체 추적으로 자동."""
+    profile = load_profile(payload.get("profile", "wanghee"))
+    style = profile.get("ai_style", "")
+    segments = []
+    for s in payload["segments"]:
+        c = CLIPS.get(s["clip_id"])
+        if not c:
+            return JSONResponse({"error": f"클립 없음: {s['clip_id']}"}, status_code=400)
+        segments.append({"path": c["path"], "a": s["a"], "b": s["b"], "spd": s.get("spd", 1)})
+    if not segments:
+        return JSONResponse({"error": "세그먼트가 없습니다"}, status_code=400)
+    if not find_claude():
+        return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
+    synopsis = (payload.get("synopsis") or "").strip()
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, ai_bubbles, segments, style, synopsis)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return result
 
 
 @app.post("/api/airecommend")
@@ -280,6 +304,10 @@ async def render(payload: dict):
     if is_preview:
         spec["preview"] = True
         title_out += "_미리보기"   # 최종 파일과 겹치지 않게 (덮어써도 무방)
+    elif spec.get("bubbles"):
+        # 최종 렌더에 실제 쓰인 말풍선 적재 → 다음 AI 제안의 말투 예시가 됨
+        log_bubbles("final", [{"a": b[0], "b": b[1], "text": b[2], "fx": b[3], "fy": b[4]}
+                              for b in spec["bubbles"]])
     spec["output"] = str(OUTPUT_DIR / f"{title_out}.mp4")
     JOBS[job_id] = queue.Queue()
     threading.Thread(target=run_job, args=(job_id, spec), daemon=True).start()

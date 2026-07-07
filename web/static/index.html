@@ -164,8 +164,11 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <h2>말풍선 자막 <span class="chip">강아지 옆 짧은 대사·효과음</span></h2>
     <div class="hint" style="margin-bottom:10px">참고 스타일: 강아지 머리 옆 "저리 비켜", 행동 옆 "손x2", "킁" — 🎯을 누른 뒤 <b>플레이어 화면에서 표시할 위치를 클릭</b>하세요. 음성 없이 화면에만 그려집니다 (이모지는 미지원)</div>
     <table id="bubT"><thead><tr><th style="width:80px">시작(s)</th><th style="width:80px">끝(s)</th><th>텍스트 (짧게!)</th><th style="width:130px">위치</th><th></th></tr></thead><tbody></tbody></table>
-    <div style="margin-top:10px"><button onclick="addBubble()">+ 말풍선</button>
-      <span class="hint" id="bubHint"></span></div>
+    <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
+      <button onclick="addBubble()">+ 말풍선</button>
+      <button onclick="aiBubbles()" id="abBtn" style="border-color:var(--acc); color:var(--acc)">✦ AI 말풍선</button>
+      <span class="hint" id="bubHint">AI가 장면을 보고 대사·시각을 정하고, 피사체 추적이 위치를 찍습니다 (쓸수록 채널 말투 학습)</span>
+    </div>
   </div>
 
   <div class="card">
@@ -588,6 +591,30 @@ function renderBubbles() {
     <td><button class="mini" onclick="bubbles.splice(${i},1); bubPick=-1; renderBubbles()">✕</button></td>
   </tr>`).join("");
 }
+// ── AI 말풍선: Claude가 순간·대사 결정 + 피사체 추적이 좌표 자동 지정
+async function aiBubbles() {
+  if (!segs.length) return alert("세그먼트가 없습니다. 먼저 구간을 잡으세요");
+  if (!preset) return alert("프리셋을 먼저 선택하세요");
+  const btn = $("#abBtn");
+  btn.disabled = true; btn.textContent = "✦ 장면 보고 말풍선 잡는 중… (1~3분)";
+  try {
+    const res = await (await fetch("/api/aibubbles", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
+        segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd })) }),
+    })).json();
+    if (res.error) throw res.error;
+    if (!res.bubbles || !res.bubbles.length) throw "말풍선 후보를 찾지 못했습니다";
+    bubbles = res.bubbles.map(b => ({ a: b.a, b: b.b, text: b.text, fx: b.fx, fy: b.fy }));
+    renderBubbles();
+    $("#bubHint").textContent = `✦ ${bubbles.length}개 제안됨 — 행의 🎯로 위치, 텍스트를 자유롭게 수정하세요 (수정본이 다음 제안 학습에 반영)`;
+  } catch (e) {
+    alert("AI 말풍선 실패: " + e);
+  } finally {
+    btn.disabled = false; btn.textContent = "✦ AI 말풍선";
+  }
+}
+
 function armBubblePick(i) {
   bubPick = i;
   $("#playerCard").style.display = "";
