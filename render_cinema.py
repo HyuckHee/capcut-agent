@@ -303,6 +303,7 @@ def main() -> None:
     if args.spec:
         exp_size = sp.get("exp_size", exp_size)
         exp_y = sp.get("exp_y", exp_y)
+        title_y = sp.get("title_y", title_y)  # 수동 지정 시 자동 배치보다 우선
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -413,6 +414,17 @@ def main() -> None:
         title_lines = [l for l in title.split("|") if l]
         if wide and title_lines:  # 가로: 상단 바 한 줄
             title_lines = [" ".join(title_lines)]
+        # 세로 레터박스: 제목 블록(줄수 반영)이 영상 상단을 침범하지 않게 자동 배치
+        # (예: 2줄 제목이 16:9 영상 위 검은 바(656px)를 넘어 겹치던 문제)
+        manual_ty = args.spec and "title_y" in sp
+        if title_lines and not wide and not src_portrait and not manual_ty:
+            cw, ch = 1920.0, 1080.0            # concat 전에 이 크기로 정규화됨
+            if crop_val:
+                p = crop_val.split(":")
+                cw, ch = float(p[0]), float(p[1])
+            film_top = (out_h - out_w * ch / cw) / 2
+            block_h = title_size + (len(title_lines) - 1) * title_gap
+            title_y = int(max(60, min(title_y, film_top - block_h - 28)))
         for li, line in enumerate(title_lines):
             (tmp / f"title{li}.txt").write_text(line, encoding="utf-8")
             lines.append(
