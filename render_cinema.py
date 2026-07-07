@@ -428,9 +428,14 @@ def main() -> None:
             film_top = (out_h - out_w * ch / cw) / 2
             block_h = title_size + (len(title_lines) - 1) * title_gap
             title_y = int(max(60, min(title_y, film_top - block_h - 28)))
+        elif title_lines and not wide and src_portrait and not manual_ty:
+            title_y = 140  # 풀스크린은 최상단이 그림이 제일 예쁨 (피사체 안 가림)
         # 풀스크린(세로 원본)은 영상 위에 제목이 얹히므로 반투명 검은 박스로 가독성 확보
         title_box = (":box=1:boxcolor=black@0.5:boxborderw=16"
                      if (src_portrait and not wide) else "")
+        if title_box:
+            # 줄 간격을 박스 높이(글자+패딩 16×2)에 정확히 맞춰 박스끼리 겹침(진해짐)도 틈도 없게
+            title_gap = max(title_gap, title_size + 32)
         for li, line in enumerate(title_lines):
             (tmp / f"title{li}.txt").write_text(line, encoding="utf-8")
             lines.append(
