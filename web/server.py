@@ -129,6 +129,48 @@ async def bgms():
             for f in sorted((ROOT / "library" / "bgm").glob("*.wav"))]
 
 
+SFX_DIR = ROOT / "library" / "sfx"
+SFX_LABELS = {
+    "dog_happybark": "🐶 강아지 행복한 짖음 (앙앙)",
+    "dog_whine1": "🐶 강아지 낑낑 (높은 톤)",
+    "dog_whine2": "🐶 강아지 낑낑 (부드러운)",
+    "dog_whine3": "🐶 강아지 낑낑 (짧게)",
+    "dog_play": "🐶 강아지 노는 소리",
+    "dog_breath": "🐶 강아지 킁킁·숨소리",
+    "pop": "뿅 (가벼운 팝)",
+    "boing": "보잉 (통통 튀는)",
+    "squeak": "삑 (삑삑이)",
+    "whoosh": "휙 (빠른 스침)",
+    "sparkle": "반짝 (반짝임)",
+    "roll": "데굴 (구르기)",
+    "wiggle": "꼬물 (꼬물거림)",
+    "whine": "낑 (합성)",
+    "tiyong": "티용 (튕김)",
+}
+
+
+def sfx_list() -> list[dict]:
+    out = []
+    for f in sorted(SFX_DIR.glob("*.wav")):
+        out.append({"name": f.stem, "path": str(f),
+                    "label": SFX_LABELS.get(f.stem, f.stem)})
+    return out
+
+
+@app.get("/api/sfx")
+async def sfx_endpoint():
+    return sfx_list()
+
+
+@app.get("/api/sfx/{name}")
+async def sfx_audio(name: str):
+    """효과음 미리듣기 스트리밍."""
+    p = SFX_DIR / f"{Path(name).stem}.wav"
+    if p.exists() and SFX_DIR in p.parents:
+        return FileResponse(p, media_type="audio/wav")
+    return JSONResponse({"error": "not found"}, status_code=404)
+
+
 # ── 휴리스틱 자동 틀 + 프로파일 튜닝
 from app.auto_draft import draft, load_profile, save_profile  # noqa: E402
 
@@ -160,7 +202,35 @@ async def autodraft(payload: dict):
     return result
 
 
-from app.ai_draft import ai_draft, ai_bubbles, recommend_edit, find_claude, log_bubbles  # noqa: E402
+from app.ai_draft import ai_draft, ai_bubbles, ai_sfx, recommend_edit, find_claude, log_bubbles  # noqa: E402
+
+
+@app.post("/api/aisfx")
+async def aisfx(payload: dict):
+    """편집본을 관찰해 어울리는 효과음을 자동 배치 (좌표 없이 시각·종류만)."""
+    profile = load_profile(payload.get("profile", "wanghee"))
+    style = profile.get("ai_style", "")
+    segments = []
+    for s in payload["segments"]:
+        c = CLIPS.get(s["clip_id"])
+        if not c:
+            return JSONResponse({"error": f"클립 없음: {s['clip_id']}"}, status_code=400)
+        segments.append({"path": c["path"], "a": s["a"], "b": s["b"], "spd": s.get("spd", 1)})
+    if not segments:
+        return JSONResponse({"error": "세그먼트가 없습니다"}, status_code=400)
+    if not find_claude():
+        return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
+    options = [{"name": s["name"], "label": s["label"]} for s in sfx_list()]
+    by_name = {s["name"]: s["path"] for s in sfx_list()}
+    synopsis = (payload.get("synopsis") or "").strip()
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, ai_sfx, segments, style, options, synopsis)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    for s in result["sfx"]:
+        s["path"] = by_name.get(s["name"], "")
+    return result
 
 
 @app.post("/api/aibubbles")

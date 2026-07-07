@@ -230,6 +230,8 @@ def main() -> None:
                 narrs.append((float(entry[0]), entry[1], wav, None, 1.0, True))
         # 말풍선 자막: [[a, b, "텍스트", fx, fy]] — fx/fy는 화면 비율(0~1), 주아체로 피사체 옆에 표시
         bubbles = sp.get("bubbles", [])
+        # 효과음: [[at, 파일경로, vol]] — 지정 시각에 강조음 삽입
+        sfx = sp.get("sfx", [])
         narr_captions = sp.get("narr_captions", False)
         narr_warm = sp.get("narr_warm", True)
         keywords = sp.get("keywords", [])
@@ -267,6 +269,7 @@ def main() -> None:
         narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None, 1.0, True)
                  for s in args.narr]
         bubbles = []
+        sfx = []
         narr_captions = False
         narr_warm = True
         keywords = []
@@ -550,6 +553,21 @@ def main() -> None:
             amap = "[aout]"
         else:
             amap = "[ac2]"
+
+        # ── 효과음: 지정 시각에 얹기 (덕킹 대상 아님 — 짧고 또렷한 강조음)
+        if sfx:
+            sfx_labels = []
+            for si, entry in enumerate(sfx):
+                at, path = float(entry[0]), entry[1]
+                vol = float(entry[2]) if len(entry) > 2 else 0.9
+                sidx = len(inputs)
+                inputs.append(path)
+                lines.append(f"[{sidx}:a]aformat=sample_rates=44100:channel_layouts=mono,"
+                             f"adelay={round(at * 1000)}:all=1,volume={round(vol, 3)}[sfx{si}];")
+                sfx_labels.append(f"[sfx{si}]")
+            lines.append(f"{amap}{''.join(sfx_labels)}amix=inputs={1 + len(sfx_labels)}:"
+                         f"duration=first:normalize=0,alimiter=limit=0.97[asfx];")
+            amap = "[asfx]"
 
         # 빠른 미리보기: 레이아웃(1080 기준 좌표)은 그대로 그리고 마지막에 절반 축소 → 인코딩 부담↓
         if preview:

@@ -348,6 +348,48 @@ def ai_bubbles(segments: list[dict], style: str, synopsis: str = "") -> dict:
     return {"bubbles": bubbles}
 
 
+def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
+           synopsis: str = "") -> dict:
+    """편집본을 관찰해 효과음 배치를 제안. sfx_options: [{name, label}]. → {sfx:[{at, name, why}]}."""
+    workdir = FRAME_DIR / ("sfx_" + uuid.uuid4().hex[:8])
+    montages, total = build_montages(segments, workdir)
+    valid = {o["name"] for o in sfx_options}
+
+    lines = [
+        "너는 반려동물 쇼츠의 효과음(SFX) 편집자다. 아래 몽타주를 Read로 전부 확인해라.",
+        "각 칸 좌상단 노란 숫자는 완성 영상 기준 시각(초)이다.",
+        "",
+        "[몽타주]",
+    ]
+    for m in montages:
+        lines.append(f"- {m['name']} (칸별 시각: {', '.join(str(s) for s in m['stamps'])}초)")
+    lines += ["", f"[채널 스타일]\n{style}"]
+    if synopsis:
+        lines += ["", "[맥락]", synopsis]
+    lines += ["", "[쓸 수 있는 효과음 — name만 그대로 사용]"]
+    for o in sfx_options:
+        lines.append(f"- {o['name']}: {o['label']}")
+    lines += [
+        "",
+        "[임무] 화면에 보이는 행동·순간에 어울리는 효과음을 배치해라.",
+        "- 강아지가 무언가 물거나 짖는 순간 → 짖음/낑낑, 통통 튀는 움직임 → 팝/보잉 식으로 매칭",
+        f"- 개수는 {max(1, int(total // 8))}~{max(2, int(total // 4))}개, 서로 2초 이상 간격",
+        "- at은 그 행동이 시작되는 시각. 화면과 안 맞으면 넣지 마라 (억지 배치 금지)",
+        "- name은 위 목록에 있는 것만.",
+        "",
+        "아래 JSON만 출력해라:",
+        '{"sfx": [{"at": 3.2, "name": "dog_whine1", "why": "화면 근거"}]}',
+    ]
+    data = run_claude("\n".join(lines), workdir)
+    out = []
+    for s in data.get("sfx", []):
+        name, at = str(s.get("name", "")), float(s.get("at", -1))
+        if name in valid and 0 <= at < total:
+            out.append({"at": round(at, 1), "name": name, "why": str(s.get("why", ""))})
+    out.sort(key=lambda x: x["at"])
+    return {"sfx": out}
+
+
 def recommend_prompt(clip_montages: list[dict], synopsis: str, style: str,
                      target_len: float, max_len: float) -> str:
     """원본 전체 관찰 몽타주 + 줄거리 → 편집 구간 추천 프롬프트."""
