@@ -43,6 +43,7 @@ LOGO_Y = 1500
 LOGO_SUB_SIZE = 34
 LOGO_SUB_Y = 1665
 LABEL_SIZE = 38        # 인물 설명 라벨
+BUBBLE_SIZE = 60       # 말풍선 자막 (피사체 옆 대사·효과음, 주아체)
 MIN_SUB_LEN = 0.3
 NARR_DUCK = 0.30       # 나레이션 중 원본 볼륨
 NARR_VOL = 1.6         # 나레이션 볼륨
@@ -215,16 +216,20 @@ def main() -> None:
         subs = [(float(a), float(b), t) for a, b, t in sp.get("subs", [])]
         exps = [(float(a), float(b), t) for a, b, t in sp.get("exps", [])]
         # narrs 항목: [at, text] / [at, text, wav경로] /
-        #   {"at":.., "text": 말할 내용, "caption": 자막 텍스트('|'=수동분할), "wav": 경로, "vol": 배수(1.0=기본)}
+        #   {"at":.., "text": 말할 내용, "caption": 자막 텍스트('|'=수동분할), "wav": 경로,
+        #    "vol": 배수(1.0=기본), "speak": false=음성 없이 자막만}
         narrs = []
         for entry in sp.get("narrs", []):
             if isinstance(entry, dict):
                 narrs.append((float(entry["at"]), entry["text"],
                               entry.get("wav"), entry.get("caption"),
-                              float(entry.get("vol", 1.0))))
+                              float(entry.get("vol", 1.0)),
+                              bool(entry.get("speak", True))))
             else:
                 wav = entry[2] if len(entry) > 2 else None
-                narrs.append((float(entry[0]), entry[1], wav, None, 1.0))
+                narrs.append((float(entry[0]), entry[1], wav, None, 1.0, True))
+        # 말풍선 자막: [[a, b, "텍스트", fx, fy]] — fx/fy는 화면 비율(0~1), 주아체로 피사체 옆에 표시
+        bubbles = sp.get("bubbles", [])
         narr_captions = sp.get("narr_captions", False)
         narr_warm = sp.get("narr_warm", True)
         keywords = sp.get("keywords", [])
@@ -259,8 +264,9 @@ def main() -> None:
                             subs.append((cursor + s0 - a, cursor + s1 - a, s["text"]))
                 cursor += b - a
         exps = parse_ranges(args.exp)
-        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None, 1.0)
+        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None, 1.0, True)
                  for s in args.narr]
+        bubbles = []
         narr_captions = False
         narr_warm = True
         keywords = []
@@ -313,7 +319,10 @@ def main() -> None:
         cache_dir = Path(__file__).resolve().parent / ".cache" / "narr"
         cache_dir.mkdir(parents=True, exist_ok=True)
         narr_files = []
-        for ni, (at, text, wavsrc, _cap, vol) in enumerate(narrs):
+        for ni, (at, text, wavsrc, _cap, vol, speak) in enumerate(narrs):
+            if not speak:  # 자막만 — TTS 합성 없음 (자막 길이는 아래에서 글자수로 추정)
+                narr_files.append((at, None, 0.0, vol))
+                continue
             wav = tmp / f"narr{ni}.wav"
             if wavsrc:  # 외부 음성 파일 직접 삽입 — 24kHz mono로 정규화
                 subprocess.run([config.FFMPEG, "-y", "-v", "error", "-i", wavsrc,
@@ -352,7 +361,12 @@ def main() -> None:
 
         if narr_captions:
             exps = []
-            for (at, text, _src, cap, _vol), (_, wavf, dur, _v) in zip(narrs, narr_files):
+            for (at, text, _src, cap, _vol, speak), (_, wavf, dur, _v) in zip(narrs, narr_files):
+                if not speak:  # 자막만: whisper 싱크 없이 글자수 기반 표시 시간 추정
+                    ctext = (cap or text).replace("…", "").rstrip(".").strip()
+                    est = min(6.0, max(1.3, 0.62 + 0.145 * len(ctext)))
+                    exps.append((at, at + est, ctext, exp_color))
+                    continue
                 for c0, c1, ctext in cached_sync(cap or text, wavf, dur, caption_mode):
                     # 주아체에 '…' 글리프가 없어 네모로 깨짐 → 자막에서는 제거 (음성엔 유지)
                     ctext_clean = ctext.replace("…", "").rstrip(".").strip()
@@ -462,6 +476,18 @@ def main() -> None:
                 f":x={lx}:y={ly}:enable='between(t,{t0:.2f},{t1:.2f})'[vlab{li2}];")
             vin = f"vlab{li2}"
 
+        # 말풍선 자막 — 강아지(피사체) 옆에 짧은 대사·효과음 (주아체, 흰 글씨 + 검정 테두리)
+        for bi, (b0, b1, text, fx, fy) in enumerate(bubbles):
+            btext = text.replace("…", "").replace("·", "").strip()  # 주아체 미지원 글리프 제거
+            (tmp / f"bubble{bi}.txt").write_text(btext, encoding="utf-8")
+            bx, by = round(float(fx) * out_w), round(float(fy) * out_h)
+            lines.append(
+                f"[{vin}]drawtext=fontfile=fontr.ttf:textfile=bubble{bi}.txt"
+                f":fontsize={BUBBLE_SIZE}:fontcolor=white:borderw=7:bordercolor=black"
+                f":x={bx}-text_w/2:y={by}-text_h/2"
+                f":enable='between(t,{float(b0):.2f},{float(b1):.2f})'[vbub{bi}];")
+            vin = f"vbub{bi}"
+
         # ── BGM: 원본과 먼저 믹스 (이후 나레이션 덕킹이 BGM에도 함께 적용됨)
         if bgm:
             bgm_path = bgm.get("path")
@@ -478,11 +504,12 @@ def main() -> None:
             lines.append(f"[ac]anull[ac2];")
 
         # ── 오디오: 나레이션 사이드체인 자동 덕킹 (성우가 말할 때만 원본이 부드럽게 내려갔다 복귀)
-        if narr_files:
+        spoken_files = [nf for nf in narr_files if nf[1] is not None]  # 자막만 항목 제외
+        if spoken_files:
             base_idx = len(inputs)
             narr_labels = []
-            for ni, (at, _wav, _dur, vol) in enumerate(narr_files):
-                inputs.append(str(narr_files[ni][1]))
+            for ni, (at, wavf, _dur, vol) in enumerate(spoken_files):
+                inputs.append(str(wavf))
                 lines.append(f"[{base_idx + ni}:a]adelay={round(at * 1000)}:all=1,"
                              f"volume={round(NARR_VOL * vol, 3)}[n{ni}];")
                 narr_labels.append(f"[n{ni}]")

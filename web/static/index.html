@@ -151,13 +151,21 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
       <textarea id="synopsis" rows="3" placeholder="예) 맹인 침술사가 사실 밤에는 눈이 보인다. 궁에서 세자 독살 현장을 목격하지만, 눈이 보인다는 걸 들키면 죽는다."
         style="width:100%; resize:vertical; font-family:inherit; font-size:13px; line-height:1.5"></textarea>
     </div>
-    <table id="narrT"><thead><tr><th style="width:80px">시각(s)</th><th>대사 (말끝 … 가능 · 자막은 문장별 자동 싱크)</th><th style="width:120px">음량</th><th></th></tr></thead><tbody></tbody></table>
+    <table id="narrT"><thead><tr><th style="width:80px">시각(s)</th><th>대사 (말끝 … 가능 · 자막은 문장별 자동 싱크)</th><th style="width:96px">음성</th><th style="width:120px">음량</th><th></th></tr></thead><tbody></tbody></table>
     <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
       <button onclick="addNarr()">+ 나레이션</button>
       <button onclick="aiDraft()" id="anBtn" style="border-color:var(--acc); color:var(--acc)">✦ AI 나레이션·제목</button>
       <span class="hint">Claude가 화면을 1초 간격으로 관찰 → 그에 맞춰 나레이션 (Max 구독 · 과금 없음)</span>
     </div>
     <div id="aiInfo" style="display:none; margin-top:12px"></div>
+  </div>
+
+  <div class="card">
+    <h2>말풍선 자막 <span class="chip">강아지 옆 짧은 대사·효과음</span></h2>
+    <div class="hint" style="margin-bottom:10px">참고 스타일: 강아지 머리 옆 "저리 비켜", 행동 옆 "손x2", "킁" — 🎯을 누른 뒤 <b>플레이어 화면에서 표시할 위치를 클릭</b>하세요. 음성 없이 화면에만 그려집니다 (이모지는 미지원)</div>
+    <table id="bubT"><thead><tr><th style="width:80px">시작(s)</th><th style="width:80px">끝(s)</th><th>텍스트 (짧게!)</th><th style="width:130px">위치</th><th></th></tr></thead><tbody></tbody></table>
+    <div style="margin-top:10px"><button onclick="addBubble()">+ 말풍선</button>
+      <span class="hint" id="bubHint"></span></div>
   </div>
 
   <div class="card">
@@ -293,7 +301,7 @@ async function aiDraft() {
       body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(), segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
     })).json();
     if (res.error) throw res.error;
-    narrs = res.narrs.map(n => ({ at: n.at, text: n.text, vol: 1 })); renderNarrs();
+    narrs = res.narrs.map(n => ({ at: n.at, text: n.text, vol: 1, speak: true })); renderNarrs();
     if (res.title) $("#title").value = res.title;
     if (res.out_name && !$("#outName").value) $("#outName").value = res.out_name;
     showAiInfo(res);
@@ -540,13 +548,16 @@ pl.addEventListener("timeupdate", () => {
 });
 
 let narrs = [];
-function addNarr() { narrs.push({ at: 0, text: "", vol: 1 }); renderNarrs(); }
+function addNarr() { narrs.push({ at: 0, text: "", vol: 1, speak: true }); renderNarrs(); }
 function renderNarrs() {
   $("#narrT tbody").innerHTML = narrs.map((n, i) => `<tr>
     <td><input class="t" type="number" step="0.1" min="0" value="${n.at}" onchange="narrs[${i}].at=parseFloat(this.value)||0"></td>
     <td><input value="${n.text.replace(/"/g, "&quot;")}" onchange="narrs[${i}].text=this.value"></td>
+    <td><select onchange="narrs[${i}].speak=this.value==='1'; this.parentElement.parentElement.querySelector('input[type=range]').disabled=this.value!=='1'">
+      <option value="1" ${n.speak !== false ? "selected" : ""}>🔊 음성</option>
+      <option value="0" ${n.speak === false ? "selected" : ""}>💬 자막만</option></select></td>
     <td><div style="display:flex; align-items:center; gap:6px">
-      <input type="range" min="0" max="2" step="0.1" value="${n.vol ?? 1}" style="width:66px"
+      <input type="range" min="0" max="2" step="0.1" value="${n.vol ?? 1}" style="width:66px" ${n.speak === false ? "disabled" : ""}
         oninput="narrs[${i}].vol=parseFloat(this.value); this.nextElementSibling.textContent=Math.round(this.value*100)+'%'">
       <span class="hint" style="width:38px; text-align:right">${Math.round((n.vol ?? 1) * 100)}%</span></div></td>
     <td><button class="mini" onclick="narrs.splice(${i},1);renderNarrs()">✕</button></td>
@@ -559,6 +570,49 @@ function stats() {
   const len = segs.reduce((t, s) => t + Math.max(0, (s.b - s.a) / (s.spd || 1)), 0);
   $("#stLen").textContent = len.toFixed(1) + "s";
 }
+
+// ── 말풍선 자막: 강아지 옆 짧은 대사·효과음 (참고 쇼츠 스타일)
+let bubbles = [], bubPick = -1;
+function addBubble() {
+  const t = Math.round(pl.currentTime * 10) / 10 || 0;
+  bubbles.push({ a: t, b: t + 2, text: "", fx: null, fy: null });
+  renderBubbles();
+}
+function renderBubbles() {
+  $("#bubT tbody").innerHTML = bubbles.map((b, i) => `<tr>
+    <td><input class="t" type="number" step="0.1" min="0" value="${b.a}" onchange="bubbles[${i}].a=parseFloat(this.value)||0"></td>
+    <td><input class="t" type="number" step="0.1" min="0" value="${b.b}" onchange="bubbles[${i}].b=parseFloat(this.value)||0"></td>
+    <td><input value="${b.text.replace(/"/g, "&quot;")}" placeholder="저리 비켜 / 손x2 / 킁" onchange="bubbles[${i}].text=this.value"></td>
+    <td><button class="mini" onclick="armBubblePick(${i})" style="${bubPick === i ? "border-color:var(--acc); color:var(--acc)" : ""}">
+      ${b.fx != null ? `🎯 ${(b.fx * 100).toFixed(0)},${(b.fy * 100).toFixed(0)}%` : "🎯 위치 찍기"}</button></td>
+    <td><button class="mini" onclick="bubbles.splice(${i},1); bubPick=-1; renderBubbles()">✕</button></td>
+  </tr>`).join("");
+}
+function armBubblePick(i) {
+  bubPick = i;
+  $("#playerCard").style.display = "";
+  $("#bubHint").textContent = "플레이어 화면에서 말풍선을 놓을 지점을 클릭하세요 (영상을 그 시각으로 이동해두면 정확해요)";
+  renderBubbles();
+}
+pl.addEventListener("click", e => {
+  if (bubPick < 0 || !bubbles[bubPick]) return;
+  e.preventDefault();
+  const r = pl.getBoundingClientRect();
+  // 플레이어 letterbox 보정: 실제 영상 표시 영역 기준 좌표
+  const vw = pl.videoWidth, vh = pl.videoHeight;
+  let dw = r.width, dh = r.height, ox = 0, oy = 0;
+  if (vw && vh) {
+    const s = Math.min(r.width / vw, r.height / vh);
+    dw = vw * s; dh = vh * s; ox = (r.width - dw) / 2; oy = (r.height - dh) / 2;
+  }
+  const fx = Math.min(1, Math.max(0, (e.clientX - r.left - ox) / dw));
+  const fy = Math.min(1, Math.max(0, (e.clientY - r.top - oy) / dh));
+  bubbles[bubPick].fx = Math.round(fx * 1000) / 1000;
+  bubbles[bubPick].fy = Math.round(fy * 1000) / 1000;
+  $("#bubHint").textContent = `✓ 위치 저장됨 (${(fx * 100).toFixed(0)}%, ${(fy * 100).toFixed(0)}%)`;
+  bubPick = -1;
+  renderBubbles();
+});
 
 function buildSpec() {
   const first = clips.find(c => c.id === (segs[0] || {}).clip);
@@ -579,10 +633,15 @@ function buildSpec() {
       return [c.path, s.a, s.b, s.spd || 1];
     }),
     narrs: narrs.filter(n => n.text.trim()).map(n => {
-      const vol = n.vol ?? 1;
-      return vol === 1 ? [n.at, n.text.trim()]
-                       : { at: n.at, text: n.text.trim(), vol: vol };
+      const vol = n.vol ?? 1, speak = n.speak !== false;
+      if (vol === 1 && speak) return [n.at, n.text.trim()];
+      const d = { at: n.at, text: n.text.trim() };
+      if (vol !== 1) d.vol = vol;
+      if (!speak) d.speak = false;
+      return d;
     }),
+    bubbles: bubbles.filter(b => b.text.trim() && b.fx != null)
+      .map(b => [b.a, b.b, b.text.trim(), b.fx, b.fy]),
   };
   if ($("#bgm").value) spec.bgm = { path: $("#bgm").value, vol: parseFloat($("#bgmVol").value) || 0.15 };
   const logoText = $("#logoText").value.trim();
