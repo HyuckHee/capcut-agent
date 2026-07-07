@@ -425,12 +425,15 @@ def main() -> None:
             film_top = (out_h - out_w * ch / cw) / 2
             block_h = title_size + (len(title_lines) - 1) * title_gap
             title_y = int(max(60, min(title_y, film_top - block_h - 28)))
+        # 풀스크린(세로 원본)은 영상 위에 제목이 얹히므로 반투명 검은 박스로 가독성 확보
+        title_box = (":box=1:boxcolor=black@0.5:boxborderw=16"
+                     if (src_portrait and not wide) else "")
         for li, line in enumerate(title_lines):
             (tmp / f"title{li}.txt").write_text(line, encoding="utf-8")
             lines.append(
                 f"[{vin}]drawtext=fontfile=fontx.otf:textfile=title{li}.txt"
                 f":fontsize={title_size}:fontcolor=white:borderw=5:bordercolor=black"
-                f":x=(w-text_w)/2:y={title_y + li * title_gap}[vtt{li}];")
+                f"{title_box}:x=(w-text_w)/2:y={title_y + li * title_gap}[vtt{li}];")
             vin = f"vtt{li}"
 
         for si, (t0, t1, text) in enumerate(subs):
