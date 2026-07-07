@@ -492,15 +492,22 @@ def main() -> None:
             vin = f"vlab{li2}"
 
         # 말풍선 자막 — 강아지(피사체) 옆에 짧은 대사·효과음 (주아체, 흰 글씨 + 검정 테두리)
+        # 이모지 포함 시 drawtext(단일 폰트)로는 깨지므로 PNG로 그려 overlay
+        from app.bubble_png import has_emoji, render_bubble
         for bi, (b0, b1, text, fx, fy) in enumerate(bubbles):
             btext = text.replace("…", "").replace("·", "").strip()  # 주아체 미지원 글리프 제거
-            (tmp / f"bubble{bi}.txt").write_text(btext, encoding="utf-8")
             bx, by = round(float(fx) * out_w), round(float(fy) * out_h)
-            lines.append(
-                f"[{vin}]drawtext=fontfile=fontr.ttf:textfile=bubble{bi}.txt"
-                f":fontsize={BUBBLE_SIZE}:fontcolor=white:borderw=7:bordercolor=black"
-                f":x={bx}-text_w/2:y={by}-text_h/2"
-                f":enable='between(t,{float(b0):.2f},{float(b1):.2f})'[vbub{bi}];")
+            en = f"enable='between(t,{float(b0):.2f},{float(b1):.2f})'"
+            if has_emoji(btext):
+                render_bubble(btext, tmp / f"bubble{bi}.png", fontsize=BUBBLE_SIZE)
+                lines.append(f"movie=bubble{bi}.png[bimg{bi}];")
+                lines.append(f"[{vin}][bimg{bi}]overlay=x={bx}-w/2:y={by}-h/2:{en}[vbub{bi}];")
+            else:
+                (tmp / f"bubble{bi}.txt").write_text(btext, encoding="utf-8")
+                lines.append(
+                    f"[{vin}]drawtext=fontfile=fontr.ttf:textfile=bubble{bi}.txt"
+                    f":fontsize={BUBBLE_SIZE}:fontcolor=white:borderw=7:bordercolor=black"
+                    f":x={bx}-text_w/2:y={by}-text_h/2:{en}[vbub{bi}];")
             vin = f"vbub{bi}"
 
         # ── BGM: 원본과 먼저 믹스 (이후 나레이션 덕킹이 BGM에도 함께 적용됨)
