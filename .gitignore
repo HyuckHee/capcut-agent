@@ -26,3 +26,4 @@ logs/
 # 외부에서 받은 제3자 효과음 (Mixkit 등) — 영상 사용은 무료지만 파일 재배포 금지 → 로컬 전용
 # (프로젝트가 직접 합성한 pop/whine/boing 등은 계속 추적됨)
 library/sfx/dog_*.wav
+library/sfx/car_*.wav
