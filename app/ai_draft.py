@@ -20,6 +20,11 @@ FRAME_DIR = ROOT / ".cache" / "aidraft"
 
 CLAUDE_TIMEOUT = 420  # 프레임 여러 장 읽으면 수 분 걸릴 수 있음
 
+# 작업별 모델 분리 — 품질이 중요한 작문·스토리 설계만 큰 모델, 나머지는 빠른 모델
+# (별칭은 CLI가 최신 버전으로 해석: sonnet→Sonnet 5, opus→Opus 4.8)
+MODEL_FAST = "sonnet"   # 화면 관찰(1단계) · 말풍선 · 효과음 배치
+MODEL_SMART = "opus"    # 나레이션 작문(2단계) · 편집 구간 추천
+
 
 def find_claude() -> str | None:
     exe = shutil.which("claude")
@@ -220,12 +225,15 @@ def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: f
     return "\n".join(lines)
 
 
-def run_claude(prompt: str, cwd: Path) -> dict:
+def run_claude(prompt: str, cwd: Path, model: str | None = None) -> dict:
     exe = find_claude()
     if not exe:
         raise RuntimeError("Claude Code CLI(claude)를 찾을 수 없습니다. PATH를 확인하세요.")
+    cmd = [exe, "-p", prompt, "--output-format", "json", "--allowedTools", "Read"]
+    if model:
+        cmd += ["--model", model]
     proc = subprocess.run(
-        [exe, "-p", prompt, "--output-format", "json", "--allowedTools", "Read"],
+        cmd,
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         stdin=subprocess.DEVNULL, timeout=CLAUDE_TIMEOUT, cwd=str(cwd), shell=False)
     if "Not logged in" in proc.stdout:
@@ -253,11 +261,12 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "",
     workdir = FRAME_DIR / uuid.uuid4().hex[:8]
     montages, total = build_montages(segments, workdir)
 
-    obs = run_claude(observe_prompt(montages, synopsis, movie), workdir)
+    obs = run_claude(observe_prompt(montages, synopsis, movie), workdir, MODEL_FAST)
     observations = obs.get("observations", [])
 
     data = run_claude(narrate_prompt(observations, style, synopsis, total, dialogue,
-                                     narr_examples(preset) if preset else None, movie), workdir)
+                                     narr_examples(preset) if preset else None, movie),
+                      workdir, MODEL_SMART)
     narrs = [{"at": float(n["at"]), "text": str(n["text"]).strip()}
              for n in data.get("narrs", []) if str(n.get("text", "")).strip()]
     narrs.sort(key=lambda n: n["at"])
@@ -414,7 +423,7 @@ def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
     montages, total = build_montages(segments, workdir)
     data = run_claude(
         bubble_prompt(montages, style, synopsis, total,
-                      _bubble_examples(preset), preset), workdir)
+                      _bubble_examples(preset), preset), workdir, MODEL_FAST)
 
     track_cache: dict[int, list] = {}
     bubbles = []
@@ -494,7 +503,7 @@ def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
         "아래 JSON만 출력해라:",
         '{"sfx": [{"at": 3.2, "name": "dog_whine1", "why": "화면 근거"}]}',
     ]
-    data = run_claude("\n".join(lines), workdir)
+    data = run_claude("\n".join(lines), workdir, MODEL_FAST)
     out = []
     for s in data.get("sfx", []):
         name, at = str(s.get("name", "")), float(s.get("at", -1))
@@ -552,7 +561,8 @@ def recommend_edit(clips: list[dict], synopsis: str, style: str,
         clip_montages.append({"ci": ci, "duration": float(c["duration"]), "montages": ms})
 
     data = run_claude(
-        recommend_prompt(clip_montages, synopsis, style, target_len, max_len), workdir)
+        recommend_prompt(clip_montages, synopsis, style, target_len, max_len),
+        workdir, MODEL_SMART)
 
     segments = []
     for s in data.get("segments", []):
