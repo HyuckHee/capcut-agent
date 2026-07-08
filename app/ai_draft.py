@@ -243,38 +243,61 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "",
 BUBBLE_LOG = ROOT / "logs" / "bubbles.jsonl"
 
 
-def log_bubbles(source: str, items: list[dict]) -> None:
+def log_bubbles(source: str, items: list[dict], preset: str = "", video: str = "") -> None:
     """말풍선 사용 로그 적재 — source: 'ai'(제안) / 'final'(렌더에 실제 사용).
 
-    final 로그는 다음 AI 제안의 few-shot 예시가 되어 쓸수록 채널 말투에 수렴한다.
+    final 로그는 같은 채널(preset)의 다음 AI 제안에 few-shot 예시로 쓰인다.
+    video(출력 파일명)는 한 영상의 고유 단어가 예시를 독점하지 않게 제한하는 키.
     """
     if not items:
         return
     BUBBLE_LOG.parent.mkdir(parents=True, exist_ok=True)
     with BUBBLE_LOG.open("a", encoding="utf-8") as f:
         for it in items:
-            f.write(json.dumps({"source": source, **it}, ensure_ascii=False) + "\n")
+            row = {"source": source, "preset": preset, "video": video, **it}
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _bubble_examples(limit: int = 14) -> list[dict]:
-    """최근 확정(final) 말풍선 — AI 프롬프트 few-shot용."""
+def _bubble_examples(preset: str, limit: int = 14, per_video: int = 3) -> list[dict]:
+    """같은 채널의 최근 확정(final) 말풍선 — AI 프롬프트 few-shot용.
+
+    채널(preset)이 다르면 제외 — 영화 짤의 인물명(예: 김자홍)이 왕희 제안에 섞이는 것 방지.
+    같은 영상(video)에서는 최대 per_video개만 — 한 작품의 고유 단어가 예시를 독점하지 않게.
+    """
     if not BUBBLE_LOG.exists():
         return []
-    out = []
+    rows = []
     for ln in BUBBLE_LOG.read_text(encoding="utf-8").splitlines():
         try:
             d = json.loads(ln)
         except json.JSONDecodeError:
             continue
-        if d.get("source") == "final" and d.get("text"):
-            out.append(d)
-    return out[-limit:]
+        if d.get("source") == "final" and d.get("text") and d.get("preset") == preset:
+            rows.append(d)
+    # 최신 우선, 같은 텍스트 중복 제거 + 영상당 상한
+    out, seen_text, per_vid = [], set(), {}
+    for d in reversed(rows):
+        t, v = d["text"], d.get("video", "")
+        if t in seen_text or per_vid.get(v, 0) >= per_video:
+            continue
+        seen_text.add(t)
+        per_vid[v] = per_vid.get(v, 0) + 1
+        out.append(d)
+        if len(out) >= limit:
+            break
+    return list(reversed(out))
 
 
 def bubble_prompt(montages: list[dict], style: str, synopsis: str,
-                  total: float, examples: list[dict]) -> str:
+                  total: float, examples: list[dict], preset: str = "wanghee") -> str:
+    if preset == "cinema":
+        role = "너는 영화·드라마 짤 쇼츠의 말풍선 자막 작가다."
+        kind = "- 인물의 속마음·리액션 짧은 자막(예: 환청인가..?, (당황)) 또는 상황 강조 텍스트"
+    else:
+        role = "너는 반려동물 쇼츠의 말풍선 자막 작가다."
+        kind = "- 강아지 1인칭 짧은 대사(예: 내 인형이야!) 또는 효과음(예: 앙!, 킁킁, 쿨쿨)"
     lines = [
-        "너는 반려동물 쇼츠의 말풍선 자막 작가다. 아래 몽타주 이미지를 Read 도구로 전부 확인해라.",
+        role + " 아래 몽타주 이미지를 Read 도구로 전부 확인해라.",
         "각 칸 좌상단의 노란 숫자는 완성 영상 기준 시각(초)이다.",
         "",
         "[몽타주]",
@@ -288,13 +311,17 @@ def bubble_prompt(montages: list[dict], style: str, synopsis: str,
     if synopsis:
         lines += ["", "[맥락]", synopsis]
     if examples:
-        lines += ["", "[이 채널에서 실제 사용된 말풍선 예시 — 말투·길이를 여기에 맞춰라]"]
+        lines += [
+            "",
+            "[이 채널에서 실제 사용된 말풍선 예시 — 말투·길이·리듬만 참고해라]",
+            "주의: 예시 속 인물 이름·작품 고유 단어는 그 영상 전용이다. 이 영상에 그대로 가져오지 마라.",
+        ]
         for e in examples:
             lines.append(f"- \"{e['text']}\"")
     lines += [
         "",
         "[임무] 화면에서 실제로 보이는 행동에 맞춰 말풍선을 제안해라.",
-        "- 강아지 1인칭 짧은 대사(예: 내 인형이야!) 또는 효과음(예: 앙!, 킁킁, 쿨쿨)",
+        kind,
         "- 텍스트 2~8자. 이모지는 어울릴 때만 끝에 1개 (예: 저리 비켜😤)",
         f"- 개수는 {max(2, int(total // 8))}~{max(3, int(total // 5))}개, 서로 3초 이상 간격",
         "- at은 그 행동이 보이는 시각, dur은 1.5~2.5초",
@@ -318,14 +345,19 @@ def _out_to_src(segments: list[dict], t: float) -> tuple[dict, float]:
     return segments[-1], segments[-1]["b"]
 
 
-def ai_bubbles(segments: list[dict], style: str, synopsis: str = "") -> dict:
-    """segments → {bubbles:[{a,b,text,fx,fy}]}. 텍스트·시각은 Claude, 좌표는 피사체 추적."""
+def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
+               preset: str = "wanghee") -> dict:
+    """segments → {bubbles:[{a,b,text,fx,fy}]}. 텍스트·시각은 Claude, 좌표는 피사체 추적.
+
+    few-shot 예시는 같은 채널(preset)의 확정본만 사용한다.
+    """
     from .track_subject import track
 
     workdir = FRAME_DIR / ("bub_" + uuid.uuid4().hex[:8])
     montages, total = build_montages(segments, workdir)
     data = run_claude(
-        bubble_prompt(montages, style, synopsis, total, _bubble_examples()), workdir)
+        bubble_prompt(montages, style, synopsis, total,
+                      _bubble_examples(preset), preset), workdir)
 
     track_cache: dict[int, list] = {}
     bubbles = []
@@ -359,7 +391,7 @@ def ai_bubbles(segments: list[dict], style: str, synopsis: str = "") -> dict:
         bubbles.append({"a": round(at, 1), "b": round(min(total, at + dur), 1),
                         "text": text, "fx": round(fx, 3), "fy": round(fy, 3)})
     bubbles.sort(key=lambda x: x["a"])
-    log_bubbles("ai", bubbles)
+    log_bubbles("ai", bubbles, preset=preset)
     return {"bubbles": bubbles}
 
 

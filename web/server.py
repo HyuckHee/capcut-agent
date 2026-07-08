@@ -252,9 +252,10 @@ async def aibubbles(payload: dict):
     if not find_claude():
         return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
     synopsis = (payload.get("synopsis") or "").strip()
+    preset = payload.get("profile", "wanghee")
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, ai_bubbles, segments, style, synopsis)
+        result = await loop.run_in_executor(None, ai_bubbles, segments, style, synopsis, preset)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return result
@@ -402,9 +403,10 @@ async def render(payload: dict):
         spec["preview"] = True
         title_out += "_미리보기"   # 최종 파일과 겹치지 않게 (덮어써도 무방)
     elif spec.get("bubbles"):
-        # 최종 렌더에 실제 쓰인 말풍선 적재 → 다음 AI 제안의 말투 예시가 됨
+        # 최종 렌더에 실제 쓰인 말풍선 적재 → 같은 채널의 다음 AI 제안 예시가 됨
         log_bubbles("final", [{"a": b[0], "b": b[1], "text": b[2], "fx": b[3], "fy": b[4]}
-                              for b in spec["bubbles"]])
+                              for b in spec["bubbles"]],
+                    preset=payload.get("preset", ""), video=title_out)
     spec["output"] = str(OUTPUT_DIR / f"{title_out}.mp4")
     JOBS[job_id] = queue.Queue()
     threading.Thread(target=run_job, args=(job_id, spec), daemon=True).start()

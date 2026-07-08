@@ -863,7 +863,7 @@ async function render(preview) {
   const t0 = Date.now();
   const res = await (await fetch("/api/render", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ spec: buildSpec(), output_name: $("#outName").value, preview: !!preview }),
+    body: JSON.stringify({ spec: buildSpec(), output_name: $("#outName").value, preview: !!preview, preset: preset }),
   })).json();
   setTimeout(() => setStep(1), 500);  // 단계 최소 가시화
   const restore = () => { $("#pvBtn").disabled = false; $("#rdBtn").disabled = false; btn.textContent = btnLabel; };
