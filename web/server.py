@@ -260,6 +260,27 @@ async def aibubbles(payload: dict):
     return result
 
 
+@app.post("/api/transcribe")
+async def transcribe_endpoint(payload: dict):
+    """편집 세그먼트 구간의 원본 오디오를 whisper로 돌려 대사 자막을 자동 추출."""
+    from app.transcribe import transcribe_segments
+
+    segments = []
+    for s in payload["segments"]:
+        c = CLIPS.get(s["clip_id"])
+        if not c:
+            return JSONResponse({"error": f"클립 없음: {s['clip_id']}"}, status_code=400)
+        segments.append({"path": c["path"], "a": s["a"], "b": s["b"], "spd": s.get("spd", 1)})
+    if not segments:
+        return JSONResponse({"error": "세그먼트가 없습니다"}, status_code=400)
+    loop = asyncio.get_event_loop()
+    try:
+        subs = await loop.run_in_executor(None, transcribe_segments, segments)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    return {"subs": subs}
+
+
 @app.post("/api/airecommend")
 async def airecommend(payload: dict):
     """원본 클립 전체 + 줄거리를 Claude에게 보여주고 편집 구간을 추천받는다."""
