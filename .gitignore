@@ -27,3 +27,4 @@ logs/
 # (프로젝트가 직접 합성한 pop/whine/boing 등은 계속 추적됨)
 library/sfx/dog_*.wav
 library/sfx/car_*.wav
+library/sfx/fx_*.wav
