@@ -487,7 +487,7 @@ def main() -> None:
             lines.append(
                 f"[{vin}]drawtext=fontfile=font.ttf:textfile=sub{si}.txt"
                 f":fontsize={sub_size}:fontcolor=white:borderw=4:bordercolor=black"
-                f":line_spacing=8:x=(w-text_w)/2:y={sub_y}"
+                f":line_spacing=-25:x=(w-text_w)/2:y={sub_y}"
                 f":enable='between(t,{t0:.2f},{t1:.2f})'[vsub{si}];")
             vin = f"vsub{si}"
 
