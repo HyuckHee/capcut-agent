@@ -149,8 +149,9 @@ def observe_prompt(montages: list[dict], synopsis: str) -> str:
     return "\n".join(lines)
 
 
-def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: float) -> str:
-    """2단계: 관찰 로그에 앵커링한 나레이션·제목."""
+def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: float,
+                   dialogue: list[dict] | None = None) -> str:
+    """2단계: 관찰 로그에 앵커링한 나레이션·제목. dialogue=[{a,b,text}] 대사 구간은 피해서 배치."""
     obs_text = "\n".join(f"- {o.get('t')}s: {o.get('see', '')}" for o in observations)
     lines = [
         "너는 유튜브 쇼츠 나레이터다. 아래 '화면 관찰 로그'는 영상에서 실제로 보이는 내용이다.",
@@ -168,6 +169,18 @@ def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: f
             "[줄거리·맥락] 화면에 안 보이는 인물관계·반전 '해석'에만 참고해라. 장면 묘사는 관찰 로그와",
             "일치시키고, 복선은 반전 장면(관찰 로그상 후반) 전에 깔아라.",
             synopsis,
+        ]
+    if dialogue:
+        lines += [
+            "",
+            "[원본 대사 구간 — 나레이션 배치 금지 시간대]",
+            "아래 시간대엔 배우가 말하고 있다. 나레이션이 겹치면 자동 덕킹으로 대사 소리가 묻힌다.",
+        ]
+        for d in dialogue:
+            lines.append(f"- {float(d['a']):.1f}~{float(d['b']):.1f}초: \"{d.get('text', '')}\"")
+        lines += [
+            "- 나레이션은 at부터 약 3초간 재생된다 — at ~ at+3초가 위 구간과 겹치지 않게 대사 사이 틈에 배치해라.",
+            "- 틈이 3초보다 짧으면 그 자리는 건너뛰어라. 대사 내용은 맥락 참고용으로 활용해도 된다.",
         ]
     lines += [
         "",
@@ -200,11 +213,13 @@ def run_claude(prompt: str, cwd: Path) -> dict:
     return json.loads(m.group(0))
 
 
-def ai_draft(segments: list[dict], style: str, synopsis: str = "") -> dict:
+def ai_draft(segments: list[dict], style: str, synopsis: str = "",
+             dialogue: list[dict] | None = None) -> dict:
     """segments: [{path, a, b, spd, tags}] → {title, out_name, narrs, observations, synopsis_check?}.
 
     2단계: (1) 촘촘한 몽타주로 화면 관찰 로그 작성 (줄거리 제공 시 일치 검사) →
            (2) 관찰 로그에 앵커링한 나레이션·제목 작성.
+    dialogue=[{a,b,text}] (완성영상 시각 기준 대사 자막)를 주면 그 시간대를 피해 배치한다.
     """
     workdir = FRAME_DIR / uuid.uuid4().hex[:8]
     montages, total = build_montages(segments, workdir)
@@ -212,7 +227,7 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "") -> dict:
     obs = run_claude(observe_prompt(montages, synopsis), workdir)
     observations = obs.get("observations", [])
 
-    data = run_claude(narrate_prompt(observations, style, synopsis, total), workdir)
+    data = run_claude(narrate_prompt(observations, style, synopsis, total, dialogue), workdir)
     narrs = [{"at": float(n["at"]), "text": str(n["text"]).strip()}
              for n in data.get("narrs", []) if str(n.get("text", "")).strip()]
     narrs.sort(key=lambda n: n["at"])

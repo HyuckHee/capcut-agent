@@ -324,9 +324,12 @@ async def aidraft(payload: dict):
     if not find_claude():
         return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
     synopsis = (payload.get("synopsis") or "").strip()
+    # 추출된 대사 자막이 있으면 그 시간대를 피해 나레이션 배치 (덕킹으로 대사 묻힘 방지)
+    dialogue = [{"a": float(d["a"]), "b": float(d["b"]), "text": str(d.get("text", ""))}
+                for d in (payload.get("subs") or []) if d.get("text", "").strip()]
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, ai_draft, segments, style, synopsis)
+        result = await loop.run_in_executor(None, ai_draft, segments, style, synopsis, dialogue)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return result

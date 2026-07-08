@@ -323,7 +323,9 @@ async function aiDraft() {
   try {
     const res = await (await fetch("/api/aidraft", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(), segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
+      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
+        subs: subsRows.filter(s => s.text.trim()).map(s => ({ a: s.a, b: s.b, text: s.text.trim() })),  // 대사 구간 회피용
+        segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
     })).json();
     if (res.error) throw res.error;
     narrs = res.narrs.map(n => ({ at: n.at, text: n.text, vol: 1, speak: true })); renderNarrs();
