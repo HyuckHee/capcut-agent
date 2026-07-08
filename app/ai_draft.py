@@ -150,7 +150,8 @@ def observe_prompt(montages: list[dict], synopsis: str) -> str:
 
 
 def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: float,
-                   dialogue: list[dict] | None = None) -> str:
+                   dialogue: list[dict] | None = None,
+                   examples: list[dict] | None = None) -> str:
     """2단계: 관찰 로그에 앵커링한 나레이션·제목. dialogue=[{a,b,text}] 대사 구간은 피해서 배치."""
     obs_text = "\n".join(f"- {o.get('t')}s: {o.get('see', '')}" for o in observations)
     lines = [
@@ -163,6 +164,14 @@ def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: f
         "[화면 관찰 로그]",
         obs_text,
     ]
+    if examples:
+        lines += [
+            "",
+            "[이 채널에서 실제 사용된 나레이션 예시 — 말투·문장 길이·어미만 참고해라]",
+            "주의: 예시 속 인물 이름·작품 고유 단어는 그 영상 전용이다. 이 영상에 가져오지 마라.",
+        ]
+        for e in examples:
+            lines.append(f"- \"{e['text']}\"")
     if synopsis:
         lines += [
             "",
@@ -214,12 +223,13 @@ def run_claude(prompt: str, cwd: Path) -> dict:
 
 
 def ai_draft(segments: list[dict], style: str, synopsis: str = "",
-             dialogue: list[dict] | None = None) -> dict:
+             dialogue: list[dict] | None = None, preset: str = "") -> dict:
     """segments: [{path, a, b, spd, tags}] → {title, out_name, narrs, observations, synopsis_check?}.
 
     2단계: (1) 촘촘한 몽타주로 화면 관찰 로그 작성 (줄거리 제공 시 일치 검사) →
            (2) 관찰 로그에 앵커링한 나레이션·제목 작성.
     dialogue=[{a,b,text}] (완성영상 시각 기준 대사 자막)를 주면 그 시간대를 피해 배치한다.
+    preset을 주면 같은 채널의 확정 나레이션을 말투 예시로 쓰고, 제안을 로그에 남긴다.
     """
     workdir = FRAME_DIR / uuid.uuid4().hex[:8]
     montages, total = build_montages(segments, workdir)
@@ -227,10 +237,12 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "",
     obs = run_claude(observe_prompt(montages, synopsis), workdir)
     observations = obs.get("observations", [])
 
-    data = run_claude(narrate_prompt(observations, style, synopsis, total, dialogue), workdir)
+    data = run_claude(narrate_prompt(observations, style, synopsis, total, dialogue,
+                                     narr_examples(preset) if preset else None), workdir)
     narrs = [{"at": float(n["at"]), "text": str(n["text"]).strip()}
              for n in data.get("narrs", []) if str(n.get("text", "")).strip()]
     narrs.sort(key=lambda n: n["at"])
+    log_narrs("ai", narrs, preset=preset)
 
     result = {"title": data.get("title", ""), "out_name": data.get("out_name", ""),
               "narrs": narrs, "observations": observations}
@@ -239,46 +251,45 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "",
     return result
 
 
-# ── AI 말풍선: Claude가 순간+대사를 정하고, 피사체 추적이 좌표를 찍는다
+# ── 사용 로그 (채널별 학습): 말풍선·나레이션·효과음이 같은 구조를 공유한다
+# source: 'ai'(제안) / 'final'(렌더에 실제 사용). final이 같은 채널의 다음 제안 예시가 된다.
 BUBBLE_LOG = ROOT / "logs" / "bubbles.jsonl"
+NARR_LOG = ROOT / "logs" / "narrs.jsonl"
+SFX_LOG = ROOT / "logs" / "sfx.jsonl"
 
 
-def log_bubbles(source: str, items: list[dict], preset: str = "", video: str = "") -> None:
-    """말풍선 사용 로그 적재 — source: 'ai'(제안) / 'final'(렌더에 실제 사용).
-
-    final 로그는 같은 채널(preset)의 다음 AI 제안에 few-shot 예시로 쓰인다.
-    video(출력 파일명)는 한 영상의 고유 단어가 예시를 독점하지 않게 제한하는 키.
-    """
+def _log_rows(path: Path, source: str, items: list[dict],
+              preset: str = "", video: str = "") -> None:
     if not items:
         return
-    BUBBLE_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with BUBBLE_LOG.open("a", encoding="utf-8") as f:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as f:
         for it in items:
             row = {"source": source, "preset": preset, "video": video, **it}
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
-def _bubble_examples(preset: str, limit: int = 14, per_video: int = 3) -> list[dict]:
-    """같은 채널의 최근 확정(final) 말풍선 — AI 프롬프트 few-shot용.
-
-    채널(preset)이 다르면 제외 — 영화 짤의 인물명(예: 김자홍)이 왕희 제안에 섞이는 것 방지.
-    같은 영상(video)에서는 최대 per_video개만 — 한 작품의 고유 단어가 예시를 독점하지 않게.
-    """
-    if not BUBBLE_LOG.exists():
+def _final_rows(path: Path, preset: str) -> list[dict]:
+    """같은 채널의 확정(final) 행만 — 다른 채널의 작품 고유 단어 유입 방지."""
+    if not path.exists():
         return []
     rows = []
-    for ln in BUBBLE_LOG.read_text(encoding="utf-8").splitlines():
+    for ln in path.read_text(encoding="utf-8").splitlines():
         try:
             d = json.loads(ln)
         except json.JSONDecodeError:
             continue
-        if d.get("source") == "final" and d.get("text") and d.get("preset") == preset:
+        if d.get("source") == "final" and d.get("preset") == preset:
             rows.append(d)
-    # 최신 우선, 같은 텍스트 중복 제거 + 영상당 상한
+    return rows
+
+
+def _text_examples(path: Path, preset: str, limit: int, per_video: int = 3) -> list[dict]:
+    """최신 우선 + 같은 텍스트 중복 제거 + 영상당 상한(한 작품의 고유 단어 독점 방지)."""
     out, seen_text, per_vid = [], set(), {}
-    for d in reversed(rows):
-        t, v = d["text"], d.get("video", "")
-        if t in seen_text or per_vid.get(v, 0) >= per_video:
+    for d in reversed(_final_rows(path, preset)):
+        t, v = d.get("text", ""), d.get("video", "")
+        if not t or t in seen_text or per_vid.get(v, 0) >= per_video:
             continue
         seen_text.add(t)
         per_vid[v] = per_vid.get(v, 0) + 1
@@ -286,6 +297,33 @@ def _bubble_examples(preset: str, limit: int = 14, per_video: int = 3) -> list[d
         if len(out) >= limit:
             break
     return list(reversed(out))
+
+
+def log_bubbles(source: str, items: list[dict], preset: str = "", video: str = "") -> None:
+    _log_rows(BUBBLE_LOG, source, items, preset, video)
+
+
+def log_narrs(source: str, items: list[dict], preset: str = "", video: str = "") -> None:
+    _log_rows(NARR_LOG, source, items, preset, video)
+
+
+def log_sfx(source: str, items: list[dict], preset: str = "", video: str = "") -> None:
+    _log_rows(SFX_LOG, source, items, preset, video)
+
+
+def _bubble_examples(preset: str, limit: int = 14) -> list[dict]:
+    return _text_examples(BUBBLE_LOG, preset, limit)
+
+
+def narr_examples(preset: str, limit: int = 10) -> list[dict]:
+    return _text_examples(NARR_LOG, preset, limit)
+
+
+def sfx_usage(preset: str, top: int = 8) -> list[tuple[str, int]]:
+    """이 채널에서 실제 쓴 효과음 사용 빈도 — AI가 채널 취향의 소리를 우선하게."""
+    from collections import Counter
+    cnt = Counter(d.get("name", "") for d in _final_rows(SFX_LOG, preset) if d.get("name"))
+    return cnt.most_common(top)
 
 
 def bubble_prompt(montages: list[dict], style: str, synopsis: str,
@@ -396,14 +434,19 @@ def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
 
 
 def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
-           synopsis: str = "") -> dict:
-    """편집본을 관찰해 효과음 배치를 제안. sfx_options: [{name, label}]. → {sfx:[{at, name, why}]}."""
+           synopsis: str = "", preset: str = "") -> dict:
+    """편집본을 관찰해 효과음 배치를 제안. sfx_options: [{name, label}]. → {sfx:[{at, name, why}]}.
+
+    preset을 주면 이 채널에서 자주 쓴 효과음 빈도를 참고시키고, 제안을 로그에 남긴다.
+    """
     workdir = FRAME_DIR / ("sfx_" + uuid.uuid4().hex[:8])
     montages, total = build_montages(segments, workdir)
     valid = {o["name"] for o in sfx_options}
+    role = ("너는 영화·드라마 짤 쇼츠의 효과음(SFX) 편집자다." if preset == "cinema"
+            else "너는 반려동물 쇼츠의 효과음(SFX) 편집자다.")
 
     lines = [
-        "너는 반려동물 쇼츠의 효과음(SFX) 편집자다. 아래 몽타주를 Read로 전부 확인해라.",
+        role + " 아래 몽타주를 Read로 전부 확인해라.",
         "각 칸 좌상단 노란 숫자는 완성 영상 기준 시각(초)이다.",
         "",
         "[몽타주]",
@@ -416,6 +459,11 @@ def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
     lines += ["", "[쓸 수 있는 효과음 — name만 그대로 사용]"]
     for o in sfx_options:
         lines.append(f"- {o['name']}: {o['label']}")
+    usage = sfx_usage(preset) if preset else []
+    if usage:
+        lines += ["", "[이 채널에서 실제 자주 쓴 효과음 — 취향 참고용, 화면에 맞는 소리가 항상 우선]"]
+        for name, cnt in usage:
+            lines.append(f"- {name} ({cnt}회)")
     lines += [
         "",
         "[임무] 화면에 보이는 행동·순간에 어울리는 효과음을 배치해라.",
@@ -434,6 +482,7 @@ def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
         if name in valid and 0 <= at < total:
             out.append({"at": round(at, 1), "name": name, "why": str(s.get("why", ""))})
     out.sort(key=lambda x: x["at"])
+    log_sfx("ai", [{"at": s["at"], "name": s["name"]} for s in out], preset=preset)
     return {"sfx": out}
 
 

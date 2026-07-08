@@ -205,7 +205,8 @@ async def autodraft(payload: dict):
     return result
 
 
-from app.ai_draft import ai_draft, ai_bubbles, ai_sfx, recommend_edit, find_claude, log_bubbles  # noqa: E402
+from app.ai_draft import (ai_draft, ai_bubbles, ai_sfx, recommend_edit, find_claude,  # noqa: E402
+                          log_bubbles, log_narrs, log_sfx)
 
 
 @app.post("/api/aisfx")
@@ -226,9 +227,10 @@ async def aisfx(payload: dict):
     options = [{"name": s["name"], "label": s["label"]} for s in sfx_list()]
     by_name = {s["name"]: s["path"] for s in sfx_list()}
     synopsis = (payload.get("synopsis") or "").strip()
+    preset = payload.get("profile", "wanghee")
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, ai_sfx, segments, style, options, synopsis)
+        result = await loop.run_in_executor(None, ai_sfx, segments, style, options, synopsis, preset)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     for s in result["sfx"]:
@@ -328,9 +330,11 @@ async def aidraft(payload: dict):
     # 추출된 대사 자막이 있으면 그 시간대를 피해 나레이션 배치 (덕킹으로 대사 묻힘 방지)
     dialogue = [{"a": float(d["a"]), "b": float(d["b"]), "text": str(d.get("text", ""))}
                 for d in (payload.get("subs") or []) if d.get("text", "").strip()]
+    preset = payload.get("profile", "wanghee")
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, ai_draft, segments, style, synopsis, dialogue)
+        result = await loop.run_in_executor(
+            None, ai_draft, segments, style, synopsis, dialogue, preset)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return result
@@ -402,11 +406,23 @@ async def render(payload: dict):
     if is_preview:
         spec["preview"] = True
         title_out += "_미리보기"   # 최종 파일과 겹치지 않게 (덮어써도 무방)
-    elif spec.get("bubbles"):
-        # 최종 렌더에 실제 쓰인 말풍선 적재 → 같은 채널의 다음 AI 제안 예시가 됨
-        log_bubbles("final", [{"a": b[0], "b": b[1], "text": b[2], "fx": b[3], "fy": b[4]}
-                              for b in spec["bubbles"]],
-                    preset=payload.get("preset", ""), video=title_out)
+    else:
+        # 최종 렌더에 실제 쓰인 말풍선·나레이션·효과음 적재 → 같은 채널의 다음 AI 제안 예시가 됨
+        _preset = payload.get("preset", "")
+        if spec.get("bubbles"):
+            log_bubbles("final", [{"a": b[0], "b": b[1], "text": b[2], "fx": b[3], "fy": b[4]}
+                                  for b in spec["bubbles"]], preset=_preset, video=title_out)
+        narr_items = []
+        for n in spec.get("narrs", []):
+            if isinstance(n, dict):
+                narr_items.append({"at": n.get("at"), "text": str(n.get("text", "")),
+                                   "speak": n.get("speak", True)})
+            else:
+                narr_items.append({"at": n[0], "text": str(n[1]), "speak": True})
+        log_narrs("final", [x for x in narr_items if x["text"].strip()],
+                  preset=_preset, video=title_out)
+        log_sfx("final", [{"at": s[0], "name": Path(s[1]).stem} for s in spec.get("sfx", [])],
+                preset=_preset, video=title_out)
     spec["output"] = str(OUTPUT_DIR / f"{title_out}.mp4")
     JOBS[job_id] = queue.Queue()
     threading.Thread(target=run_job, args=(job_id, spec), daemon=True).start()
