@@ -807,7 +807,7 @@ function buildSpec() {
     narr_captions: true,
     narr_warm: !$("#voice").value.startsWith("tc_"),
     caption_mode: preset === "wanghee" ? "sentence" : "chunk",
-    exp_color: preset === "wanghee" ? "0xFFD400" : "white",
+    exp_color: "0xFFD400",  // 나레이션 노란색 — 흰색 대사 자막과 구분 (올빼미 확정 스타일)
     exp_size: preset === "wanghee" ? 75 : 50,
     exp_y: preset === "wanghee" ? 1540 : 1255,
     keywords: [], exps: [], labels: [],
