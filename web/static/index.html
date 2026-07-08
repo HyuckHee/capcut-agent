@@ -701,6 +701,17 @@ function pickPointOnVideo(v, e) {
            fy: Math.min(1, Math.max(0, (e.clientY - r.top - oy) / dh)) };
 }
 
+// 원본 클립 시각 → 편집본(출력) 시각 매핑 (세그먼트 안에 있을 때만)
+function srcToOut(clipId, t) {
+  let cursor = 0;
+  for (const s of segs) {
+    const spd = s.spd || 1, len = (s.b - s.a) / spd;
+    if (s.clip === clipId && t >= s.a && t <= s.b) return cursor + (t - s.a) / spd;
+    cursor += len;
+  }
+  return null;
+}
+
 function applyBubblePick(v, e, isEdited) {
   if (bubPick < 0 || !bubbles[bubPick]) return;
   e.preventDefault();
@@ -709,9 +720,18 @@ function applyBubblePick(v, e, isEdited) {
   b.fx = Math.round(fx * 1000) / 1000;
   b.fy = Math.round(fy * 1000) / 1000;
   let msg = `✓ 위치 저장됨 (${(fx * 100).toFixed(0)}%, ${(fy * 100).toFixed(0)}%)`;
-  if (isEdited) {  // 편집본에서 찍으면 그 순간이 곧 말풍선 타이밍
-    const t = Math.round(v.currentTime * 10) / 10;
-    if (b.a === 0 && !b.text) { b.a = t; b.b = Math.round((t + 2) * 10) / 10; msg += ` · 시작 ${t}s 자동 설정`; }
+  // 타이밍: 현재 재생 시각으로 바꿀지 컨펌 (편집본=그대로, 원본 플레이어=세그먼트 매핑)
+  const t = isEdited ? Math.round(v.currentTime * 10) / 10
+                     : srcToOut(plClipId, v.currentTime);
+  if (t != null && Math.abs(t - b.a) > 0.05) {
+    const tr = Math.round(t * 10) / 10;
+    if (confirm(`말풍선 시작을 현재 화면 시각 ${tr}초로 바꿀까요?\n\n확인 = ${tr}초부터 표시\n취소 = 기존 시간(${b.a}초) 유지`)) {
+      const dur = Math.max(0.5, (b.b - b.a) || 2);
+      b.a = tr; b.b = Math.round((tr + dur) * 10) / 10;
+      msg += ` · 시작 ${tr}s로 변경`;
+    } else {
+      msg += ` · 시간 유지(${b.a}s)`;
+    }
   }
   $("#bubHint").textContent = msg + (isEdited ? " (편집본 기준)" : " (원본 기준 근사치 — 미리보기에서 찍으면 정확)");
   bubPick = -1;
