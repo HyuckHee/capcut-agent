@@ -205,14 +205,16 @@ def main() -> None:
         voice = sp.get("voice", DEFAULT_VOICE)
         rate = sp.get("rate", DEFAULT_RATE)
         pitch = sp.get("pitch", DEFAULT_PITCH)
-        # segs 항목: [A,B] / [파일,A,B] / [파일,A,B,배속] (배속 0.5=슬로우)
+        # segs 항목: [A,B] / [파일,A,B] / [파일,A,B,배속] / [파일,A,B,배속,회전]
+        # (배속 0.5=슬로우, 회전 90/270 = 촬영 중 폰을 돌려 누운 구간 바로 세우기)
         segs = []
         for s in sp["segs"]:
             if isinstance(s[0], str):
                 spd = float(s[3]) if len(s) > 3 else 1.0
-                segs.append((s[0], float(s[1]), float(s[2]), spd))
+                rot = int(s[4]) if len(s) > 4 else 0
+                segs.append((s[0], float(s[1]), float(s[2]), spd, rot))
             else:
-                segs.append((video, float(s[0]), float(s[1]), 1.0))
+                segs.append((video, float(s[0]), float(s[1]), 1.0, 0))
         subs = [(float(a), float(b), t) for a, b, t in sp.get("subs", [])]
         exps = [(float(a), float(b), t) for a, b, t in sp.get("exps", [])]
         # narrs 항목: [at, text] / [at, text, wav경로] /
@@ -250,15 +252,15 @@ def main() -> None:
         for spec in args.seg:
             if "|" in spec:
                 path, a, b = spec.rsplit("|", 2)
-                segs.append((path, float(a), float(b), 1.0))
+                segs.append((path, float(a), float(b), 1.0, 0))
             else:
                 a, b = spec.split("-")
-                segs.append((video, float(a), float(b), 1.0))
+                segs.append((video, float(a), float(b), 1.0, 0))
         subs = parse_ranges(args.sub)
         if args.subs:
             script = json.loads(Path(args.subs).read_text(encoding="utf-8"))
             cursor = 0.0
-            for path, a, b, _spd in segs:
+            for path, a, b, _spd, _rot in segs:
                 if path == video:
                     for s in script:
                         s0, s1 = max(s["start"], a), min(s["end"], b)
@@ -282,7 +284,7 @@ def main() -> None:
         bgm = None
         preview = False
 
-    total = sum((b - a) / spd for _, a, b, spd in segs)
+    total = sum((b - a) / spd for _, a, b, spd, _rot in segs)
     subs.sort()
 
     # ── 레이아웃 좌표 (세로 쇼츠 vs 가로 롱폼)
@@ -390,20 +392,56 @@ def main() -> None:
                     exps[i] = (t0, max(t0 + 0.2, nxt - 0.05), txt, col)
 
         # ── 비디오/오디오 세그먼트
+        # 세로 풀스크린 모드는 세그먼트별로 방향을 판단한다:
+        #   회전(rot) 지정 → transpose로 바로 세움 / 가로 세그먼트 → 블러 배경 채움(찌그러뜨리지 않음)
+        _dims_cache: dict[str, tuple[int, int]] = {}
+
+        def display_dims(p: str) -> tuple[int, int]:
+            """회전 메타데이터 반영된 표시 크기 (ffmpeg가 디코딩 시 자동 회전하므로 이것이 실제 프레임)."""
+            if p not in _dims_cache:
+                out_ = subprocess.run(
+                    [config.FFPROBE, "-v", "error", "-select_streams", "v:0",
+                     "-show_entries", "stream=width,height:stream_side_data=rotation",
+                     "-of", "json", p], capture_output=True, text=True, timeout=60)
+                st = json.loads(out_.stdout)["streams"][0]
+                w, h = int(st["width"]), int(st["height"])
+                rot_meta = 0
+                for sd in st.get("side_data_list", []):
+                    rot_meta = int(sd.get("rotation", 0) or 0)
+                if abs(rot_meta) % 180 == 90:
+                    w, h = h, w
+                _dims_cache[p] = (w, h)
+            return _dims_cache[p]
+
         inputs, input_idx, lines, pairs = [], {}, [], []
         crop = f"crop={crop_val}," if crop_val else ""
-        for i, (path, a, b, spd) in enumerate(segs):
+        for i, (path, a, b, spd, rot) in enumerate(segs):
             if path not in input_idx:
                 input_idx[path] = len(inputs)
                 inputs.append(path)
             src = input_idx[path]
-            norm = "1080:1920" if src_portrait else "1920:1080"
+            tp = {90: "transpose=1,", 270: "transpose=2,", -90: "transpose=2,"}.get(rot, "")
+            head = (f"[{src}:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{spd},{tp}" if spd != 1.0
+                    else f"[{src}:v]trim={a}:{b},setpts=PTS-STARTPTS,{tp}")
+            if src_portrait and not wide:
+                w0, h0 = display_dims(path)
+                if rot in (90, 270, -90):
+                    w0, h0 = h0, w0
+                if h0 > w0:   # 세로 → 풀스크린 (비율 보존 cover-crop)
+                    lines.append(f"{head}scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+                                 f"crop={out_w}:{out_h},setsar=1[v{i}];")
+                else:         # 가로 → 블러 확대 배경 + 원본 중앙 (쇼츠 표준)
+                    lines.append(f"{head}split=2[bg{i}][fg{i}];")
+                    lines.append(f"[bg{i}]scale={out_w}:{out_h}:force_original_aspect_ratio=increase,"
+                                 f"crop={out_w}:{out_h},boxblur=24:2[bgb{i}];")
+                    lines.append(f"[fg{i}]scale={out_w}:-2[fgs{i}];")
+                    lines.append(f"[bgb{i}][fgs{i}]overlay=(W-w)/2:(H-h)/2,setsar=1[v{i}];")
+            else:
+                norm = "1080:1920" if src_portrait else "1920:1080"
+                lines.append(f"{head}scale={norm},setsar=1[v{i}];")
             if spd != 1.0:  # 배속 (0.5 = 슬로우모션, 오디오는 피치 유지)
-                lines.append(f"[{src}:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{spd},"
-                             f"scale={norm},setsar=1[v{i}];")
                 lines.append(f"[{src}:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={spd}[a{i}];")
             else:
-                lines.append(f"[{src}:v]trim={a}:{b},setpts=PTS-STARTPTS,scale={norm},setsar=1[v{i}];")
                 lines.append(f"[{src}:a]atrim={a}:{b},asetpts=PTS-STARTPTS[a{i}];")
             pairs.append(f"[v{i}][a{i}]")
         lines.append(f"{''.join(pairs)}concat=n={len(segs)}:v=1:a=1[vc][ac];")
