@@ -121,7 +121,7 @@ def build_source_montages(clip: dict, workdir: Path, prefix: str,
     return _render_montages(pts, workdir, prefix)
 
 
-def observe_prompt(montages: list[dict], synopsis: str) -> str:
+def observe_prompt(montages: list[dict], synopsis: str, movie: str = "") -> str:
     """1단계: 화면에서 실제로 보이는 것을 시각 순 관찰 로그로."""
     lines = [
         "아래 몽타주 이미지들을 Read 도구로 전부 열어 확인해라. 각 칸 좌상단의 노란 숫자는",
@@ -132,6 +132,12 @@ def observe_prompt(montages: list[dict], synopsis: str) -> str:
     ]
     for m in montages:
         lines.append(f"- {m['name']} (칸별 시각: {', '.join(str(s) for s in m['stamps'])}초)")
+    if movie:
+        lines += [
+            "",
+            f"[작품 정보] 이 영상은 '{movie}'의 장면들이다. 네가 이 작품을 안다면 인물·장소 식별에",
+            "활용해도 된다 (예: '갓 쓴 남자' 대신 '침술사 경수'). 단, 화면에 없는 사건을 관찰에 넣지 마라.",
+        ]
     check_field = ""
     if synopsis:
         lines += [
@@ -151,8 +157,12 @@ def observe_prompt(montages: list[dict], synopsis: str) -> str:
 
 def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: float,
                    dialogue: list[dict] | None = None,
-                   examples: list[dict] | None = None) -> str:
-    """2단계: 관찰 로그에 앵커링한 나레이션·제목. dialogue=[{a,b,text}] 대사 구간은 피해서 배치."""
+                   examples: list[dict] | None = None, movie: str = "") -> str:
+    """2단계: 관찰 로그에 앵커링한 나레이션·제목. dialogue=[{a,b,text}] 대사 구간은 피해서 배치.
+
+    movie(작품명)를 주면 Claude가 이미 아는 그 영화의 줄거리·인물 지식을 활용한다
+    (파라메트릭 지식 — 긴 줄거리 없이 제목 한 줄로 맥락 확보).
+    """
     obs_text = "\n".join(f"- {o.get('t')}s: {o.get('see', '')}" for o in observations)
     lines = [
         "너는 유튜브 쇼츠 나레이터다. 아래 '화면 관찰 로그'는 영상에서 실제로 보이는 내용이다.",
@@ -164,6 +174,13 @@ def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: f
         "[화면 관찰 로그]",
         obs_text,
     ]
+    if movie:
+        lines += [
+            "",
+            f"[작품 정보] 이 영상은 '{movie}'의 장면들이다.",
+            "네가 이미 아는 이 작품의 줄거리·인물 관계·반전·결말 지식을 적극 활용해 맥락 있는 나레이션을 써라.",
+            "단, 이 작품을 모르거나 기억이 불확실하면 지어내지 말고 화면 관찰과 제공된 줄거리만 근거로 해라.",
+        ]
     if examples:
         lines += [
             "",
@@ -223,22 +240,24 @@ def run_claude(prompt: str, cwd: Path) -> dict:
 
 
 def ai_draft(segments: list[dict], style: str, synopsis: str = "",
-             dialogue: list[dict] | None = None, preset: str = "") -> dict:
+             dialogue: list[dict] | None = None, preset: str = "",
+             movie: str = "") -> dict:
     """segments: [{path, a, b, spd, tags}] → {title, out_name, narrs, observations, synopsis_check?}.
 
     2단계: (1) 촘촘한 몽타주로 화면 관찰 로그 작성 (줄거리 제공 시 일치 검사) →
            (2) 관찰 로그에 앵커링한 나레이션·제목 작성.
     dialogue=[{a,b,text}] (완성영상 시각 기준 대사 자막)를 주면 그 시간대를 피해 배치한다.
     preset을 주면 같은 채널의 확정 나레이션을 말투 예시로 쓰고, 제안을 로그에 남긴다.
+    movie(작품명)를 주면 Claude가 이미 아는 그 작품의 줄거리 지식을 활용한다.
     """
     workdir = FRAME_DIR / uuid.uuid4().hex[:8]
     montages, total = build_montages(segments, workdir)
 
-    obs = run_claude(observe_prompt(montages, synopsis), workdir)
+    obs = run_claude(observe_prompt(montages, synopsis, movie), workdir)
     observations = obs.get("observations", [])
 
     data = run_claude(narrate_prompt(observations, style, synopsis, total, dialogue,
-                                     narr_examples(preset) if preset else None), workdir)
+                                     narr_examples(preset) if preset else None, movie), workdir)
     narrs = [{"at": float(n["at"]), "text": str(n["text"]).strip()}
              for n in data.get("narrs", []) if str(n.get("text", "")).strip()]
     narrs.sort(key=lambda n: n["at"])

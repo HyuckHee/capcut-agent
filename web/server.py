@@ -331,10 +331,11 @@ async def aidraft(payload: dict):
     dialogue = [{"a": float(d["a"]), "b": float(d["b"]), "text": str(d.get("text", ""))}
                 for d in (payload.get("subs") or []) if d.get("text", "").strip()]
     preset = payload.get("profile", "wanghee")
+    movie = (payload.get("movie") or "").strip()  # 작품명 → Claude의 기존 영화 지식 활용
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(
-            None, ai_draft, segments, style, synopsis, dialogue, preset)
+            None, ai_draft, segments, style, synopsis, dialogue, preset, movie)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return result
