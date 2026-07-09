@@ -244,6 +244,7 @@ def main() -> None:
         wide = sp.get("aspect") == "wide"  # 가로 16:9 (롱폼용)
         src_portrait = sp.get("src_portrait", False)  # 세로 촬영 소스 → 풀스크린
         bgm = sp.get("bgm")              # {"path": wav(생략시 라이브러리 첫 곡), "vol": 0.18}
+        src_vol = float(sp.get("src_vol", 1.0))  # 원본 소리 배수 (0=무음, 1=그대로)
         preview = sp.get("preview", False)  # 빠른 미리보기: 절반 해상도 + ultrafast 인코딩
     else:
         video, output, crop_val = args.video, args.output, args.crop
@@ -272,6 +273,7 @@ def main() -> None:
                  for s in args.narr]
         bubbles = []
         sfx = []
+        src_vol = 1.0
         narr_captions = False
         narr_warm = True
         keywords = []
@@ -556,6 +558,9 @@ def main() -> None:
                     f":x={bx}-text_w/2:y={by}-text_h/2:{en}[vbub{bi}];")
             vin = f"vbub{bi}"
 
+        # 원본 소리 볼륨 (0=무음 — 유행곡을 유튜브에서 얹을 영상 등)
+        lines.append(f"[ac]volume={round(src_vol, 3)}[acv];")
+
         # ── BGM: 원본과 먼저 믹스 (이후 나레이션 덕킹이 BGM에도 함께 적용됨)
         if bgm:
             bgm_path = bgm.get("path")
@@ -566,10 +571,10 @@ def main() -> None:
             bgm_idx = len(inputs)
             inputs.append(bgm_path)
             lines.append(f"[{bgm_idx}:a]volume={bgm_vol},atrim=0:{total:.3f}[bgmx];")
-            lines.append(f"[ac][bgmx]amix=inputs=2:duration=first:normalize=0[acb];")
+            lines.append(f"[acv][bgmx]amix=inputs=2:duration=first:normalize=0[acb];")
             lines.append(f"[acb]anull[ac2];")
         else:
-            lines.append(f"[ac]anull[ac2];")
+            lines.append(f"[acv]anull[ac2];")
 
         # ── 오디오: 나레이션 사이드체인 자동 덕킹 (성우가 말할 때만 원본이 부드럽게 내려갔다 복귀)
         spoken_files = [nf for nf in narr_files if nf[1] is not None]  # 자막만 항목 제외

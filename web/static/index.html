@@ -200,6 +200,13 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
       <div class="field"><label>BGM</label><select id="bgm"><option value="">없음</option></select></div>
       <div class="field"><label>BGM 볼륨</label><input id="bgmVol" value="0.15"></div>
     </div>
+    <div class="grid3" style="margin-top:10px">
+      <div class="field"><label>원본 소리 (0% = 무음 · 유행곡은 유튜브에서 얹을 때)</label>
+        <div style="display:flex; align-items:center; gap:8px">
+          <input type="range" id="srcVol" min="0" max="2" step="0.05" value="1" style="flex:1"
+            oninput="$('#srcVolLbl').textContent=Math.round(this.value*100)+'%'">
+          <span class="hint" id="srcVolLbl" style="width:44px; text-align:right">100%</span></div></div>
+    </div>
     <div class="row2">
       <div class="field"><label>상단 제목 (비우면 없음 · | = 줄바꿈)</label><input id="title" placeholder="집온지 4일차 : 왕희의 하루"></div>
       <div class="field"><label>출력 파일명</label><input id="outName" placeholder="집온지 4일차_쇼츠"></div>
@@ -831,6 +838,8 @@ function buildSpec() {
       .map(b => [b.a, b.b, b.text.trim(), b.fx, b.fy]),
     sfx: sfxRows.filter(s => s.path).map(s => [s.at, s.path, s.vol]),
   };
+  spec.src_vol = parseFloat($("#srcVol").value);
+  if (isNaN(spec.src_vol)) spec.src_vol = 1;
   if ($("#bgm").value) spec.bgm = { path: $("#bgm").value, vol: parseFloat($("#bgmVol").value) || 0.15 };
   const logoText = $("#logoText").value.trim();
   if (logoText) {
