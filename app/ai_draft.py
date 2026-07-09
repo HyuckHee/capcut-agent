@@ -347,6 +347,21 @@ def narr_examples(preset: str, limit: int = 10) -> list[dict]:
     return _text_examples(NARR_LOG, preset, limit)
 
 
+def sfx_counts() -> dict[str, int]:
+    """최종 렌더에 실제 쓰인 효과음별 누적 횟수 (채널 무관 합산 — UI 표시용)."""
+    from collections import Counter
+    cnt: Counter = Counter()
+    if SFX_LOG.exists():
+        for ln in SFX_LOG.read_text(encoding="utf-8").splitlines():
+            try:
+                d = json.loads(ln)
+            except json.JSONDecodeError:
+                continue
+            if d.get("source") == "final" and d.get("name"):
+                cnt[d["name"]] += 1
+    return dict(cnt)
+
+
 def sfx_usage(preset: str, top: int = 8) -> list[tuple[str, int]]:
     """이 채널에서 실제 쓴 효과음 사용 빈도 — AI가 채널 취향의 소리를 우선하게."""
     from collections import Counter

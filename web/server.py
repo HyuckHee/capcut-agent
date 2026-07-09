@@ -135,6 +135,7 @@ SFX_LABELS = {
     "dog_whine1": "🐶 강아지 낑낑 (높은 톤)",
     "dog_whine2": "🐶 강아지 낑낑 (부드러운)",
     "dog_whine3": "🐶 강아지 낑낑 (짧게)",
+    "dog_wanghee_cry": "🐶 왕희 실제 울음 (본견 녹음)",
     "dog_play": "🐶 강아지 노는 소리",
     "dog_breath": "🐶 강아지 킁킁·숨소리",
     "car_passby": "🚗 자동차 쎙~ 지나감 (빠름)",
@@ -167,10 +168,13 @@ SFX_LABELS = {
 
 
 def sfx_list() -> list[dict]:
+    from app.ai_draft import sfx_counts
+    counts = sfx_counts()
     out = []
     for f in sorted(SFX_DIR.glob("*.wav")):
         out.append({"name": f.stem, "path": str(f),
-                    "label": SFX_LABELS.get(f.stem, f.stem)})
+                    "label": SFX_LABELS.get(f.stem, f.stem),
+                    "count": counts.get(f.stem, 0)})
     return out
 
 
