@@ -229,17 +229,19 @@ def main() -> None:
         exps = [(float(a), float(b), t) for a, b, t in sp.get("exps", [])]
         # narrs 항목: [at, text] / [at, text, wav경로] /
         #   {"at":.., "text": 말할 내용, "caption": 자막 텍스트('|'=수동분할), "wav": 경로,
-        #    "vol": 배수(1.0=기본), "speak": false=음성 없이 자막만}
+        #    "vol": 배수(1.0=기본), "speak": false=음성 없이 자막만,
+        #    "voice": 이 문장만 다른 음성(예: 나레이터+캐릭터 혼성 나레이션)}
         narrs = []
         for entry in sp.get("narrs", []):
             if isinstance(entry, dict):
                 narrs.append((float(entry["at"]), entry["text"],
                               entry.get("wav"), entry.get("caption"),
                               float(entry.get("vol", 1.0)),
-                              bool(entry.get("speak", True))))
+                              bool(entry.get("speak", True)),
+                              entry.get("voice")))
             else:
                 wav = entry[2] if len(entry) > 2 else None
-                narrs.append((float(entry[0]), entry[1], wav, None, 1.0, True))
+                narrs.append((float(entry[0]), entry[1], wav, None, 1.0, True, None))
         # 말풍선 자막: [[a, b, "텍스트", fx, fy]] — fx/fy는 화면 비율(0~1), 주아체로 피사체 옆에 표시
         bubbles = sp.get("bubbles", [])
         # 효과음: [[at, 파일경로, vol]] — 지정 시각에 강조음 삽입
@@ -281,7 +283,7 @@ def main() -> None:
                             subs.append((cursor + s0 - a, cursor + s1 - a, s["text"]))
                 cursor += b - a
         exps = parse_ranges(args.exp)
-        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None, 1.0, True)
+        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None, 1.0, True, None)
                  for s in args.narr]
         bubbles = []
         sfx = []
@@ -340,7 +342,7 @@ def main() -> None:
         cache_dir = Path(__file__).resolve().parent / ".cache" / "narr"
         cache_dir.mkdir(parents=True, exist_ok=True)
         narr_files = []
-        for ni, (at, text, wavsrc, _cap, vol, speak) in enumerate(narrs):
+        for ni, (at, text, wavsrc, _cap, vol, speak, nvoice) in enumerate(narrs):
             if not speak:  # 자막만 — TTS 합성 없음 (자막 길이는 아래에서 글자수로 추정)
                 narr_files.append((at, None, 0.0, vol))
                 continue
@@ -351,16 +353,19 @@ def main() -> None:
                 if narr_warm:
                     warm(wav, config.FFMPEG)
             else:
+                # 문장별 음성 오버라이드 (혼성 나레이션). Typecast는 이미 자연스러워 warm 생략
+                voice_i = nvoice or voice
+                warm_i = False if str(voice_i).startswith("tc_") else narr_warm
                 key = hashlib.sha1(
-                    f"{voice}|{rate}|{pitch}|{narr_warm}|{text}".encode("utf-8")
+                    f"{voice_i}|{rate}|{pitch}|{warm_i}|{text}".encode("utf-8")
                 ).hexdigest()[:16]
                 cached = cache_dir / f"{key}.wav"
                 if cached.exists():
                     shutil.copy(cached, wav)
                     print(f"  나레이션 {ni + 1}: 캐시 재사용")
                 else:
-                    synth(text, wav, voice=voice, rate=rate, pitch=pitch)
-                    if narr_warm:
+                    synth(text, wav, voice=voice_i, rate=rate, pitch=pitch)
+                    if warm_i:
                         warm(wav, config.FFMPEG)
                     shutil.copy(wav, cached)
                     print(f"  나레이션 {ni + 1}: 새로 합성 (캐시 저장)")
@@ -382,7 +387,7 @@ def main() -> None:
 
         if narr_captions:
             exps = []
-            for (at, text, _src, cap, _vol, speak), (_, wavf, dur, _v) in zip(narrs, narr_files):
+            for (at, text, _src, cap, _vol, speak, _nv), (_, wavf, dur, _v) in zip(narrs, narr_files):
                 if not speak:  # 자막만: whisper 싱크 없이 글자수 기반 표시 시간 추정
                     ctext = (cap or text).replace("…", "").rstrip(".").strip()
                     est = min(6.0, max(1.3, 0.62 + 0.145 * len(ctext)))
