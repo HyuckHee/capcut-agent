@@ -621,6 +621,101 @@ def recommend_edit(clips: list[dict], synopsis: str, style: str,
     return {"segments": segments, "note": data.get("note", "")}
 
 
+def edit_apply_prompt(montages: list[dict], seg_lines: list[str], style: str,
+                      direction: str, total: float) -> str:
+    """현재 편집본 몽타주 + 세그먼트 매핑 + 디렉션 → 수정된 세그먼트 목록 프롬프트."""
+    lines = [
+        "너는 유튜브 쇼츠 편집자다. '현재 편집본'과 편집자의 수정 디렉션이 주어진다.",
+        "아래 몽타주는 현재 편집본을 시간순으로 훑은 것이다. 각 칸 좌상단의 노란 숫자는",
+        "완성 영상 기준 시각(초)이다. Read 도구로 전부 확인해라.",
+        "",
+        "[현재 편집본 몽타주]",
+    ]
+    for m in montages:
+        lines.append(f"- {m['name']} (칸별 시각: {', '.join(str(s) for s in m['stamps'])}초)")
+    lines += [
+        "",
+        f"[현재 세그먼트 — 완성 시각 ↔ 원본 매핑, 총 {total:.1f}초]",
+        *seg_lines,
+        "",
+        f"[채널 스타일]\n{style}",
+        "",
+        "[편집자 디렉션 — 이걸 편집에 반영하는 게 임무다]",
+        direction.strip(),
+        "",
+        "[임무] 디렉션을 반영한 '전체 세그먼트 목록'을 다시 출력해라.",
+        "디렉션과 무관한 구간은 그대로 유지하고, 지목된 구간만 고친다.",
+        "[연출 도구]",
+        "- 슬로우: spd 0.4~0.7 (기본 1.0)",
+        "- 리플레이: 같은 원본 구간 세그먼트를 하나 더 넣어 정속 → 슬로우 순으로 반복 재생",
+        "- 확대(줌인): zoom 1.3~2.0 — 피사체·표정 강조. 지목된 세그먼트에만 (중심은 시스템이 피사체 추적으로 자동 결정)",
+        "- 분할: 디렉션이 세그먼트 일부만 지목하면 그 부분을 잘라 별도 세그먼트로 나눠 연출",
+        "[규칙]",
+        "- 디렉션의 시각은 완성 영상 기준이다 → 위 매핑 표로 원본 시각(a, b)으로 환산해라.",
+        "- clip은 매핑 표의 클립 번호. a<b. 완성 영상에 나올 순서대로 나열해라.",
+        "- 총 길이(배속 반영)는 60초를 넘지 말 것.",
+        "",
+        "아래 JSON만 출력해라:",
+        '{"segments": [{"clip": 0, "a": 0.3, "b": 2.8, "spd": 1.0, "zoom": 1.0, "why": "변경 이유(유지 구간은 생략)"}],'
+        ' "note": "디렉션을 어떻게 반영했는지 한두 문장"}',
+    ]
+    return "\n".join(lines)
+
+
+def ai_edit_apply(segments: list[dict], style: str, direction: str,
+                  preset: str = "wanghee") -> dict:
+    """현재 세그먼트 + 편집 디렉션 → 슬로우·리플레이·확대가 반영된 세그먼트 목록.
+
+    segments: [{path, a, b, spd, zoom?}]. 디렉션 시각(완성 기준)을 원본으로 환산할 수 있게
+    매핑 표를 프롬프트에 제공한다. zoom 세그먼트는 피사체 추적으로 중심을 자동 결정(wanghee).
+    반환: {segments:[{clip,a,b,spd,zoom,zcx,zcy,why}], paths, note} — clip은 paths 인덱스.
+    """
+    workdir = FRAME_DIR / ("edit_" + uuid.uuid4().hex[:8])
+    montages, total = build_montages(segments, workdir)
+
+    paths: list[str] = []
+    for s in segments:
+        if s["path"] not in paths:
+            paths.append(s["path"])
+    seg_lines, cursor = [], 0.0
+    for i, s in enumerate(segments):
+        spd = float(s.get("spd", 1) or 1)
+        dur = (float(s["b"]) - float(s["a"])) / spd
+        extra = f", spd {spd}" if spd != 1 else ""
+        if float(s.get("zoom", 1) or 1) != 1:
+            extra += f", zoom {s['zoom']}"
+        seg_lines.append(f"{i + 1}) 완성 {cursor:.1f}~{cursor + dur:.1f}초 = "
+                         f"클립{paths.index(s['path'])} 원본 {s['a']:.1f}~{s['b']:.1f}초{extra}")
+        cursor += dur
+
+    data = run_claude(edit_apply_prompt(montages, seg_lines, style, direction, total),
+                      workdir, MODEL_SMART)
+
+    out = []
+    for s in data.get("segments", []):
+        ci = int(s.get("clip", 0))
+        if not (0 <= ci < len(paths)):
+            continue
+        a, b = float(s["a"]), float(s["b"])
+        if b <= a:
+            continue
+        spd = min(2.0, max(0.3, float(s.get("spd", 1) or 1)))
+        zoom = min(2.5, max(1.0, float(s.get("zoom", 1) or 1)))
+        zcx = zcy = 0.5
+        if zoom > 1.001 and preset == "wanghee":
+            try:  # 확대 중심 = 그 구간 피사체(강아지) 위치
+                from .track_subject import track
+                knots = track(paths[ci], a, b)
+                mid = knots[len(knots) // 2]
+                zcx, zcy = float(mid[1]), float(mid[2])
+            except Exception:
+                pass
+        out.append({"clip": ci, "a": round(a, 1), "b": round(b, 1), "spd": spd,
+                    "zoom": round(zoom, 2), "zcx": round(zcx, 3), "zcy": round(zcy, 3),
+                    "why": str(s.get("why", ""))})
+    return {"segments": out, "paths": paths, "note": data.get("note", "")}
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     spec = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))

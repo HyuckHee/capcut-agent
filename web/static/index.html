@@ -142,7 +142,7 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
   <div class="card">
     <h2>세그먼트 (타임라인 순서)</h2>
     <table id="segT"><thead><tr>
-      <th>클립</th><th>시작(s)</th><th>끝(s)</th><th>배속</th><th></th>
+      <th>클립</th><th>시작(s)</th><th>끝(s)</th><th>배속</th><th>확대</th><th></th>
     </tr></thead><tbody></tbody></table>
     <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
       <button onclick="addSeg()">+ 세그먼트</button>
@@ -179,7 +179,8 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <h2>편집본 미리 재생 <span class="chip" id="tpTime">0.0s</span></h2>
     <div class="hint" style="margin-bottom:12px">렌더링 없이 세그먼트를 순서대로 이어 재생합니다 (배속 반영 · 소리는 원본). 여기 표시되는 시각이 <b>완성 영상 기준</b> — 아래 디렉션에 그대로 쓰면 됩니다</div>
     <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap">
-      <video id="tlPlayer" style="max-height:300px; max-width:100%; border-radius:10px; border:1px solid var(--line); background:#000"></video>
+      <div style="overflow:hidden; border-radius:10px; border:1px solid var(--line); background:#000; max-width:100%">
+        <video id="tlPlayer" style="max-height:300px; max-width:100%; display:block"></video></div>
       <div style="flex:1; min-width:220px">
         <div style="font-family:Consolas,monospace; font-size:34px; font-weight:600" id="tpBig">0.0<span style="font-size:16px; color:var(--dim)">s / 0.0s</span></div>
         <div class="hint" id="tpSeg">세그먼트 -</div>
@@ -195,8 +196,13 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
   <div class="card">
     <h2>편집 디렉션 <span class="chip">시각 = 완성 영상 기준</span></h2>
     <div class="hint" style="margin-bottom:10px">세그먼트가 확정된 뒤에 적으세요 — 여기 적는 시각(초)은 <b>편집된 완성 영상 타임라인</b> 기준이라, 아래 나레이션·말풍선·효과음 AI가 정확히 알아듣습니다</div>
-    <textarea id="direction" rows="2" placeholder="예) 10~13초를 슬로우모션으로 한 번 더 보여줘서 강조해줘 · 초반엔 나레이션 없이 강아지 소리만 살려줘 · 엔딩은 잔잔하게"
+    <textarea id="direction" rows="2" placeholder="예) 10~13초를 슬로우모션으로 한 번 더 보여줘서 강조해줘 · 6.5초 고개 돌리는 장면 확대해줘 · 엔딩은 잔잔하게"
       style="width:100%; resize:vertical; font-family:inherit; font-size:13px; line-height:1.5"></textarea>
+    <div style="margin-top:10px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+      <button onclick="aiEdit()" id="aeBtn" style="border-color:var(--acc); color:var(--acc)">✦ 디렉션을 편집에 적용</button>
+      <span class="hint" style="margin-top:0">슬로우·리플레이·확대 등 <b>영상 컷 자체</b>를 고칩니다 (나레이션·말풍선·효과음 AI는 아래에서 각자 디렉션을 참고)</span>
+    </div>
+    <div class="hint" id="aeInfo" style="display:none"></div>
   </div>
 
   <div class="card" id="subsCard">
@@ -331,9 +337,12 @@ function tlLoadSeg(i, autoplay) {
   const move = () => {
     v.currentTime = s.a;
     v.playbackRate = s.spd || 1;
+    const z = s.zoom || 1;  // 확대 미리보기 (렌더의 crop 확대를 CSS로 근사)
+    v.style.transformOrigin = `${(s.zcx ?? 0.5) * 100}% ${(s.zcy ?? 0.5) * 100}%`;
+    v.style.transform = z > 1 ? `scale(${z})` : "";
     if (autoplay) v.play();
     $("#tpSeg").textContent = `세그먼트 ${i + 1}/${segs.length} · ${clip ? clip.name : s.clip} · 원본 ${s.a}~${s.b}s`
-      + ((s.spd || 1) !== 1 ? ` · ${s.spd}x 슬로우` : "");
+      + ((s.spd || 1) !== 1 ? ` · ${s.spd}x 슬로우` : "") + (z > 1 ? ` · ${z}x 확대` : "");
   };
   if (v.dataset.clip !== String(s.clip)) {
     v.dataset.clip = String(s.clip);
@@ -377,6 +386,32 @@ function tlStamp() {
   const d = $("#direction");
   d.value = (d.value ? d.value.replace(/\s*$/, " ") : "") + tlNow().toFixed(1) + "초 ";
   d.focus();
+}
+
+// ── 디렉션을 편집(세그먼트)에 적용: 슬로우·리플레이·확대 등 컷 자체를 수정
+async function aiEdit() {
+  if (!segs.length) return alert("세그먼트가 없습니다 — ② 컷 편집에서 구간을 먼저 잡으세요");
+  if (!$("#direction").value.trim()) return alert("편집 디렉션을 먼저 적으세요");
+  const btn = $("#aeBtn");
+  btn.disabled = true; btn.textContent = "✦ 편집본 보고 디렉션 반영 중… (2~5분)";
+  try {
+    const res = await (await fetch("/api/aiedit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: preset, direction: $("#direction").value.trim(),
+        segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd || 1, zoom: s.zoom || 1 })) }),
+    })).json();
+    if (res.error) throw res.error;
+    if (!res.segments || !res.segments.length) throw "수정안을 만들지 못했습니다";
+    segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: s.spd || 1,
+      zoom: s.zoom || 1, zcx: s.zcx, zcy: s.zcy, tags: "" }));
+    renderSegs();
+    const changed = res.segments.filter(s => (s.why || "").trim());
+    $("#aeInfo").innerHTML = "✦ " + (res.note || "반영 완료").replace(/</g, "&lt;") +
+      (changed.length ? "<br>" + changed.map(s => `· ${s.a}~${s.b}s ${(s.why || "").replace(/</g, "&lt;")}`).join("<br>") : "") +
+      "<br>→ 위 <b>편집본 미리 재생</b>으로 확인하세요 (확대·슬로우 반영됨)";
+    $("#aeInfo").style.display = "block";
+  } catch (e) { alert("디렉션 적용 실패: " + e); }
+  finally { btn.disabled = false; btn.textContent = "✦ 디렉션을 편집에 적용"; }
 }
 
 document.querySelectorAll(".preset").forEach(el => el.onclick = () => {
@@ -617,6 +652,7 @@ function renderSegs() {
     <td><input class="t" type="number" step="0.1" min="0" value="${s.a}" onclick="event.stopPropagation()" onfocus="selectSeg(${i}); this.select()" onchange="setSegTime(${i},'a',this.value)"></td>
     <td><input class="t" type="number" step="0.1" min="0" value="${s.b}" onclick="event.stopPropagation()" onfocus="selectSeg(${i}); this.select()" onchange="setSegTime(${i},'b',this.value)"></td>
     <td><input class="spd" type="number" step="0.1" min="0.1" value="${s.spd}" onclick="event.stopPropagation()" onchange="segs[${i}].spd=parseFloat(this.value)||1; stats()"></td>
+    <td><input class="spd" type="number" step="0.1" min="1" max="2.5" value="${s.zoom || 1}" title="1 = 원본, 1.5 = 1.5배 확대 (중심은 피사체 자동)" onclick="event.stopPropagation()" onchange="segs[${i}].zoom=parseFloat(this.value)||1"></td>
     <td style="white-space:nowrap">
       <button class="mini" onclick="event.stopPropagation(); previewSeg(${i})" style="color:var(--acc)">▶</button>
       <button class="mini" onclick="event.stopPropagation(); rotSeg(${i})" title="촬영 중 폰 돌려서 누운 구간 세우기" ${(s.rot || 0) !== 0 ? 'style="border-color:var(--acc); color:var(--acc)"' : ""}>↻${s.rot ? s.rot + "°" : ""}</button>
@@ -966,7 +1002,7 @@ function buildSpec() {
     subs: subsRows.filter(s => s.text.trim()).map(s => [s.a, s.b, s.text.trim()]),
     segs: segs.map(s => {
       const c = clips.find(x => x.id === s.clip);
-      return [c.path, s.a, s.b, s.spd || 1, s.rot || 0];
+      return [c.path, s.a, s.b, s.spd || 1, s.rot || 0, s.zoom || 1, s.zcx ?? 0.5, s.zcy ?? 0.5];
     }),
     narrs: narrs.filter(n => n.text.trim()).map(n => {
       const vol = n.vol ?? 1, speak = n.speak !== false;

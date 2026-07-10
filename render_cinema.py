@@ -208,15 +208,20 @@ def main() -> None:
         rate = sp.get("rate", DEFAULT_RATE)
         pitch = sp.get("pitch", DEFAULT_PITCH)
         # segs 항목: [A,B] / [파일,A,B] / [파일,A,B,배속] / [파일,A,B,배속,회전]
-        # (배속 0.5=슬로우, 회전 90/270 = 촬영 중 폰을 돌려 누운 구간 바로 세우기)
+        #           / [파일,A,B,배속,회전,확대,중심x,중심y]
+        # (배속 0.5=슬로우, 회전 90/270 = 촬영 중 폰을 돌려 누운 구간 바로 세우기,
+        #  확대 1.5=피사체 줌인 — 중심 0~1 비율, 생략 시 화면 중앙)
         segs = []
         for s in sp["segs"]:
             if isinstance(s[0], str):
                 spd = float(s[3]) if len(s) > 3 else 1.0
                 rot = int(s[4]) if len(s) > 4 else 0
-                segs.append((s[0], float(s[1]), float(s[2]), spd, rot))
+                zoom = float(s[5]) if len(s) > 5 else 1.0
+                zcx = float(s[6]) if len(s) > 6 else 0.5
+                zcy = float(s[7]) if len(s) > 7 else 0.5
+                segs.append((s[0], float(s[1]), float(s[2]), spd, rot, zoom, zcx, zcy))
             else:
-                segs.append((video, float(s[0]), float(s[1]), 1.0, 0))
+                segs.append((video, float(s[0]), float(s[1]), 1.0, 0, 1.0, 0.5, 0.5))
         subs = [(float(a), float(b), t) for a, b, t in sp.get("subs", [])]
         exps = [(float(a), float(b), t) for a, b, t in sp.get("exps", [])]
         # narrs 항목: [at, text] / [at, text, wav경로] /
@@ -257,15 +262,15 @@ def main() -> None:
         for spec in args.seg:
             if "|" in spec:
                 path, a, b = spec.rsplit("|", 2)
-                segs.append((path, float(a), float(b), 1.0, 0))
+                segs.append((path, float(a), float(b), 1.0, 0, 1.0, 0.5, 0.5))
             else:
                 a, b = spec.split("-")
-                segs.append((video, float(a), float(b), 1.0, 0))
+                segs.append((video, float(a), float(b), 1.0, 0, 1.0, 0.5, 0.5))
         subs = parse_ranges(args.sub)
         if args.subs:
             script = json.loads(Path(args.subs).read_text(encoding="utf-8"))
             cursor = 0.0
-            for path, a, b, _spd, _rot in segs:
+            for path, a, b, _spd, _rot, *_z in segs:
                 if path == video:
                     for s in script:
                         s0, s1 = max(s["start"], a), min(s["end"], b)
@@ -291,7 +296,7 @@ def main() -> None:
         bgm = None
         preview = False
 
-    total = sum((b - a) / spd for _, a, b, spd, _rot in segs)
+    total = sum((b - a) / spd for _, a, b, spd, _rot, *_z in segs)
     subs.sort()
 
     # ── 레이아웃 좌표 (세로 쇼츠 vs 가로 롱폼)
@@ -422,14 +427,24 @@ def main() -> None:
 
         inputs, input_idx, lines, pairs = [], {}, [], []
         crop = f"crop={crop_val}," if crop_val else ""
-        for i, (path, a, b, spd, rot) in enumerate(segs):
+        for i, (path, a, b, spd, rot, zoom, zcx, zcy) in enumerate(segs):
             if path not in input_idx:
                 input_idx[path] = len(inputs)
                 inputs.append(path)
             src = input_idx[path]
             tp = {90: "transpose=1,", 270: "transpose=2,", -90: "transpose=2,"}.get(rot, "")
-            head = (f"[{src}:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{spd},{tp}" if spd != 1.0
-                    else f"[{src}:v]trim={a}:{b},setpts=PTS-STARTPTS,{tp}")
+            # 확대: 중심(zcx,zcy) 기준 1/zoom 크기로 크롭 → 이후 scale 정규화가 확대 효과
+            zf = ""
+            if zoom > 1.001:
+                w0, h0 = display_dims(path)
+                if rot in (90, 270, -90):
+                    w0, h0 = h0, w0
+                cw, ch = int(w0 / zoom) // 2 * 2, int(h0 / zoom) // 2 * 2
+                zx = min(max(int(w0 * zcx - cw / 2), 0), w0 - cw)
+                zy = min(max(int(h0 * zcy - ch / 2), 0), h0 - ch)
+                zf = f"crop={cw}:{ch}:{zx}:{zy},"
+            head = (f"[{src}:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{spd},{tp}{zf}" if spd != 1.0
+                    else f"[{src}:v]trim={a}:{b},setpts=PTS-STARTPTS,{tp}{zf}")
             if src_portrait and not wide:
                 w0, h0 = display_dims(path)
                 if rot in (90, 270, -90):

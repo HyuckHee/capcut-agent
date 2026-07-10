@@ -285,6 +285,39 @@ async def aibubbles(payload: dict):
     return result
 
 
+@app.post("/api/aiedit")
+async def aiedit(payload: dict):
+    """현재 세그먼트 + 편집 디렉션 → 슬로우·리플레이·확대가 반영된 세그먼트로 수정."""
+    from app.ai_draft import ai_edit_apply
+    profile = load_profile(payload.get("profile", "wanghee"))
+    style = profile.get("ai_style", "")
+    direction = (payload.get("direction") or "").strip()
+    if not direction:
+        return JSONResponse({"error": "편집 디렉션이 비어 있습니다"}, status_code=400)
+    segments, id_by_path = [], {}
+    for s in payload["segments"]:
+        c = CLIPS.get(s["clip_id"])
+        if not c:
+            return JSONResponse({"error": f"클립 없음: {s['clip_id']}"}, status_code=400)
+        id_by_path[c["path"]] = s["clip_id"]
+        segments.append({"path": c["path"], "a": s["a"], "b": s["b"],
+                         "spd": s.get("spd", 1), "zoom": s.get("zoom", 1)})
+    if not segments:
+        return JSONResponse({"error": "세그먼트가 없습니다"}, status_code=400)
+    if not find_claude():
+        return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
+    preset = payload.get("profile", "wanghee")
+    loop = asyncio.get_event_loop()
+    try:
+        result = await loop.run_in_executor(None, ai_edit_apply, segments, style, direction, preset)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+    for seg in result["segments"]:
+        seg["clip_id"] = id_by_path[result["paths"][seg.pop("clip")]]
+    result.pop("paths", None)
+    return result
+
+
 @app.post("/api/transcribe")
 async def transcribe_endpoint(payload: dict):
     """편집 세그먼트 구간의 원본 오디오를 whisper로 돌려 대사 자막을 자동 추출."""
