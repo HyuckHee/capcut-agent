@@ -13,6 +13,7 @@
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -25,7 +26,8 @@ from app import config
 from app.narrate import synth, warm, DEFAULT_VOICE, DEFAULT_RATE, DEFAULT_PITCH
 
 OUT_W, OUT_H = 1080, 1920
-FONT_SOURCE = Path("C:/Windows/Fonts/malgunbd.ttf")   # 대사 자막용
+FONT_SOURCE = (Path("C:/Windows/Fonts/malgunbd.ttf") if os.name == "nt"   # 맑은고딕 (대사 자막용)
+               else Path(__file__).resolve().parent / "library" / "fonts" / "Pretendard-ExtraBold.otf")
 FONT_EXP = Path(__file__).resolve().parent / "library" / "fonts" / "Pretendard-ExtraBold.otf"
 FONT_NARR = Path(__file__).resolve().parent / "library" / "fonts" / "Gungsuh.ttf"  # 궁서 (영화 로고)
 FONT_ROUND = Path(__file__).resolve().parent / "library" / "fonts" / "Jua-Regular.ttf"  # 주아 (나레이션, 둥글둥글)

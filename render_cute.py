@@ -4,6 +4,7 @@ CapCut 신버전이 UI 자동화를 막고 있어, 내보내기는 이 경로를
 사용법은 cli_cute.py와 동일 + <출력.mp4> 인자 추가.
 """
 import argparse
+import os
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,8 @@ from app.silence_detect import probe
 from app.sfx_synth import ensure_library
 
 OUT_W, OUT_H = 1920, 1080
-FONT_SOURCE = Path("C:/Windows/Fonts/malgunbd.ttf")
+FONT_SOURCE = (Path("C:/Windows/Fonts/malgunbd.ttf") if os.name == "nt"   # 맑은고딕
+               else Path(__file__).resolve().parent / "library" / "fonts" / "Pretendard-ExtraBold.otf")
 CAPTION_FONT_SIZE = 52
 CAPTION_Y_CENTER = 0.875  # transform_y -0.75 에 해당하는 세로 위치
 

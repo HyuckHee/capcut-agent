@@ -4,6 +4,12 @@ import shutil
 from pathlib import Path
 
 def _find_ffmpeg_bin(name: str) -> str:
+    if os.name != "nt":
+        # 홈브루 기본 ffmpeg는 drawtext(자막) 미포함 슬림 빌드 → keg-only인 full을 우선
+        for keg in ("/opt/homebrew/opt/ffmpeg-full/bin", "/usr/local/opt/ffmpeg-full/bin"):
+            full = Path(keg) / name
+            if full.exists():
+                return str(full)
     found = shutil.which(name)
     if found:
         return found
@@ -13,7 +19,7 @@ def _find_ffmpeg_bin(name: str) -> str:
         for exe in packages.glob(f"Gyan.FFmpeg*/**/bin/{name}.exe"):
             return str(exe)
         raise FileNotFoundError(f"{name}을 찾을 수 없습니다. winget install Gyan.FFmpeg 후 다시 시도하세요.")
-    raise FileNotFoundError(f"{name}을 찾을 수 없습니다. brew install ffmpeg 후 다시 시도하세요.")
+    raise FileNotFoundError(f"{name}을 찾을 수 없습니다. brew install ffmpeg-full 후 다시 시도하세요.")
 
 FFMPEG = _find_ffmpeg_bin("ffmpeg")
 FFPROBE = _find_ffmpeg_bin("ffprobe")
