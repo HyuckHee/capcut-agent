@@ -30,9 +30,18 @@ def has_emoji(text: str) -> bool:
 def render_bubble(text: str, out_path: str | Path, fontsize: int = 60,
                   stroke: int = 7) -> tuple[int, int]:
     """말풍선 한 줄을 투명 PNG로. (너비, 높이) 반환."""
+    text = text.replace("…", "").replace("·", "")  # 주아체 미지원 글리프
+    return render_text_png(text, out_path, font_path=JUA, fontsize=fontsize, stroke=stroke)
+
+
+def render_text_png(text: str, out_path: str | Path, font_path: str | Path | None = None,
+                    fontsize: int = 60, stroke: int = 7, box: bool = False) -> tuple[int, int]:
+    """이모지 섞인 텍스트 한 줄을 투명 PNG로 — drawtext가 못 그리는 이모지용 범용 렌더.
+
+    box=True면 반투명 검은 박스(풀스크린 제목 가독성용)를 깔아준다. (너비, 높이) 반환.
+    """
     from PIL import Image, ImageDraw, ImageFont
 
-    text = text.replace("…", "").replace("·", "")  # 주아체 미지원 글리프
     runs: list[list] = []  # [is_emoji, 문자열]
     for ch in text:
         e = _is_emoji(ch)
@@ -41,7 +50,7 @@ def render_bubble(text: str, out_path: str | Path, fontsize: int = 60,
         else:
             runs.append([e, ch])
 
-    jua = ImageFont.truetype(str(JUA), fontsize)
+    jua = ImageFont.truetype(str(font_path or JUA), fontsize)
     emj, emj_scale = _load_emoji(ImageFont, fontsize)
     if emj is None:
         emj, emj_scale = jua, 1.0
@@ -49,14 +58,14 @@ def render_bubble(text: str, out_path: str | Path, fontsize: int = 60,
     asc_e, desc_e = (int(m * emj_scale) for m in emj.getmetrics())
     ascent, descent = max(asc_j, asc_e), max(desc_j, desc_e)
 
-    pad = stroke + 4
+    pad = stroke + (20 if box else 4)  # 박스 모드는 drawtext boxborderw=16과 비슷한 여백
     probe = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
     total_w = sum(probe.textlength(s, font=emj) * emj_scale if e
                   else probe.textlength(s, font=jua) for e, s in runs)
     W = int(total_w) + pad * 2
     H = ascent + descent + pad * 2
 
-    img = Image.new("RGBA", (max(W, 4), H), (0, 0, 0, 0))
+    img = Image.new("RGBA", (max(W, 4), H), (0, 0, 0, 128) if box else (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     x, base = float(pad), pad + ascent
     for e, s in runs:
