@@ -176,6 +176,23 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
 
   <section class="page" id="page3">
   <div class="card">
+    <h2>편집본 미리 재생 <span class="chip" id="tpTime">0.0s</span></h2>
+    <div class="hint" style="margin-bottom:12px">렌더링 없이 세그먼트를 순서대로 이어 재생합니다 (배속 반영 · 소리는 원본). 여기 표시되는 시각이 <b>완성 영상 기준</b> — 아래 디렉션에 그대로 쓰면 됩니다</div>
+    <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap">
+      <video id="tlPlayer" style="max-height:300px; max-width:100%; border-radius:10px; border:1px solid var(--line); background:#000"></video>
+      <div style="flex:1; min-width:220px">
+        <div style="font-family:Consolas,monospace; font-size:34px; font-weight:600" id="tpBig">0.0<span style="font-size:16px; color:var(--dim)">s / 0.0s</span></div>
+        <div class="hint" id="tpSeg">세그먼트 -</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px">
+          <button onclick="tlPlay()">▶ 처음부터 재생</button>
+          <button onclick="tlToggle()">⏯ 일시정지/계속</button>
+          <button onclick="tlStamp()" style="border-color:var(--acc); color:var(--acc)">⏱ 현재 시각 디렉션에 넣기</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
     <h2>편집 디렉션 <span class="chip">시각 = 완성 영상 기준</span></h2>
     <div class="hint" style="margin-bottom:10px">세그먼트가 확정된 뒤에 적으세요 — 여기 적는 시각(초)은 <b>편집된 완성 영상 타임라인</b> 기준이라, 아래 나레이션·말풍선·효과음 AI가 정확히 알아듣습니다</div>
     <textarea id="direction" rows="2" placeholder="예) 10~13초를 슬로우모션으로 한 번 더 보여줘서 강조해줘 · 초반엔 나레이션 없이 강아지 소리만 살려줘 · 엔딩은 잔잔하게"
@@ -288,6 +305,78 @@ function gotoPage(n) {
   document.querySelectorAll("#pagenav .pn").forEach(el =>
     el.classList.toggle("on", el.dataset.pg == n));
   window.scrollTo({ top: 0, behavior: "smooth" });
+  if (n !== 3) { const v = $("#tlPlayer"); if (v && !v.paused) v.pause(); }
+}
+
+// ── 편집본 가상 이어 재생: 렌더링 없이 세그먼트 순서대로 원본을 seek·배속 재생.
+//    표시 시각 = 완성 영상 타임라인 기준 → 편집 디렉션과 같은 좌표계.
+const tl = { i: -1, timer: null };
+
+function tlOutBase(i) {  // i번째 세그먼트가 시작되는 완성 시각
+  let t = 0;
+  for (let k = 0; k < i && k < segs.length; k++) t += (segs[k].b - segs[k].a) / (segs[k].spd || 1);
+  return t;
+}
+
+function tlNow() {
+  if (tl.i < 0 || tl.i >= segs.length) return 0;
+  const s = segs[tl.i], v = $("#tlPlayer");
+  return tlOutBase(tl.i) + Math.max(0, Math.min(v.currentTime, s.b) - s.a) / (s.spd || 1);
+}
+
+function tlLoadSeg(i, autoplay) {
+  const s = segs[i], v = $("#tlPlayer");
+  tl.i = i;
+  const clip = clips.find(c => c.id === s.clip);
+  const move = () => {
+    v.currentTime = s.a;
+    v.playbackRate = s.spd || 1;
+    if (autoplay) v.play();
+    $("#tpSeg").textContent = `세그먼트 ${i + 1}/${segs.length} · ${clip ? clip.name : s.clip} · 원본 ${s.a}~${s.b}s`
+      + ((s.spd || 1) !== 1 ? ` · ${s.spd}x 슬로우` : "");
+  };
+  if (v.dataset.clip !== String(s.clip)) {
+    v.dataset.clip = String(s.clip);
+    v.onloadedmetadata = move;
+    v.src = "/api/clip/" + s.clip;
+  } else move();
+}
+
+function tlSync() {  // 구간 끝 감지·다음 세그 전환 + 카운터 갱신 (백그라운드 탭에서도 동작해야 해서 rAF 대신 타이머)
+  if (tl.i < 0 || tl.i >= segs.length) return;
+  const s = segs[tl.i], v = $("#tlPlayer");
+  if (!v.paused && v.currentTime >= s.b - 0.05) {
+    if (tl.i + 1 < segs.length) tlLoadSeg(tl.i + 1, true);
+    else { v.pause(); clearInterval(tl.timer); tl.timer = null; }
+  }
+  const total = tlOutBase(segs.length);
+  $("#tpBig").innerHTML = tlNow().toFixed(1) +
+    `<span style="font-size:16px; color:var(--dim)">s / ${total.toFixed(1)}s</span>`;
+  $("#tpTime").textContent = tlNow().toFixed(1) + "s";
+}
+
+function tlPlay() {
+  if (!segs.length) return alert("세그먼트가 없습니다 — ② 컷 편집에서 구간을 먼저 잡으세요");
+  const v = $("#tlPlayer");
+  if (!v.dataset.hooked) { v.dataset.hooked = "1"; v.addEventListener("timeupdate", tlSync); }
+  tlLoadSeg(0, true);
+  clearInterval(tl.timer);
+  tl.timer = setInterval(tlSync, 100);
+}
+
+function tlToggle() {
+  const v = $("#tlPlayer");
+  if (tl.i < 0) return tlPlay();
+  if (v.paused) {
+    v.play();
+    if (!tl.timer) tl.timer = setInterval(tlSync, 100);
+  } else v.pause();
+}
+
+function tlStamp() {
+  const d = $("#direction");
+  d.value = (d.value ? d.value.replace(/\s*$/, " ") : "") + tlNow().toFixed(1) + "초 ";
+  d.focus();
 }
 
 document.querySelectorAll(".preset").forEach(el => el.onclick = () => {
