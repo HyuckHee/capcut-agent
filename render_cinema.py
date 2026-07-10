@@ -247,6 +247,8 @@ def main() -> None:
         src_portrait = sp.get("src_portrait", False)  # 세로 촬영 소스 → 풀스크린
         bgm = sp.get("bgm")              # {"path": wav(생략시 라이브러리 첫 곡), "vol": 0.18}
         src_vol = float(sp.get("src_vol", 1.0))  # 원본 소리 배수 (0=무음, 1=그대로)
+        # 발성 부스트: {"windows":[[a,b],...], "factor":3.0} — 출력초 기준 발성 구간만 원본 증폭
+        vocal_boost = sp.get("vocal_boost")
         preview = sp.get("preview", False)  # 빠른 미리보기: 절반 해상도 + ultrafast 인코딩
     else:
         video, output, crop_val = args.video, args.output, args.crop
@@ -276,6 +278,7 @@ def main() -> None:
         bubbles = []
         sfx = []
         src_vol = 1.0
+        vocal_boost = None
         narr_captions = False
         narr_warm = True
         keywords = []
@@ -561,7 +564,14 @@ def main() -> None:
             vin = f"vbub{bi}"
 
         # 원본 소리 볼륨 (0=무음 — 유행곡을 유튜브에서 얹을 영상 등)
-        lines.append(f"[ac]volume={round(src_vol, 3)}[acv];")
+        # + 발성 부스트: 발성 구간만 원본을 키워 BGM 음역에 묻힌 울음 복원 (bgm.duck과 짝)
+        if vocal_boost and vocal_boost.get("windows"):
+            _bf = float(vocal_boost.get("factor", 3.0))
+            _bc = "+".join(f"between(t,{float(a):.2f},{float(b):.2f})" for a, b in vocal_boost["windows"])
+            lines.append(f"[ac]volume='if({_bc},{round(src_vol * _bf, 3)},{round(src_vol, 3)})'"
+                         f":eval=frame[acv];")
+        else:
+            lines.append(f"[ac]volume={round(src_vol, 3)}[acv];")
 
         # ── BGM: 원본과 먼저 믹스 (이후 나레이션 덕킹이 BGM에도 함께 적용됨)
         if bgm:
@@ -572,7 +582,16 @@ def main() -> None:
             bgm_vol = bgm.get("vol", 0.18)
             bgm_idx = len(inputs)
             inputs.append(bgm_path)
-            lines.append(f"[{bgm_idx}:a]volume={bgm_vol},atrim=0:{total:.3f}[bgmx];")
+            # 발성 덕킹: duck 윈도우(출력초 [[a,b],...]) 동안 BGM을 duck_vol로 —
+            # 오르골처럼 강아지 발성과 같은 음역인 BGM이 울음을 묻는 것 방지
+            duck_windows = bgm.get("duck") or []
+            if duck_windows:
+                duck_vol = bgm.get("duck_vol", 0.05)
+                cond = "+".join(f"between(t,{float(a):.2f},{float(b):.2f})" for a, b in duck_windows)
+                lines.append(f"[{bgm_idx}:a]volume='if({cond},{duck_vol},{bgm_vol})':eval=frame,"
+                             f"atrim=0:{total:.3f}[bgmx];")
+            else:
+                lines.append(f"[{bgm_idx}:a]volume={bgm_vol},atrim=0:{total:.3f}[bgmx];")
             lines.append(f"[acv][bgmx]amix=inputs=2:duration=first:normalize=0[acb];")
             lines.append(f"[acb]anull[ac2];")
         else:
