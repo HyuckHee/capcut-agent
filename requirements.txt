@@ -1,0 +1,8 @@
+pycapcut
+faster-whisper
+edge-tts
+fonttools
+fastapi
+uvicorn[standard]
+python-multipart
+numpy

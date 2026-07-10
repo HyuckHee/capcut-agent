@@ -1,13 +1,14 @@
 """한국어 나레이션 TTS.
 
 1순위: edge-tts (Microsoft Edge 신경망 음성, 무료·API키 불필요, 인터넷 필요) — 자연스러움
-2순위: Windows SAPI Heami (오프라인 폴백, 다소 기계적)
+2순위: 오프라인 폴백 — Windows SAPI Heami / macOS say Yuna (다소 기계적)
 
 edge-tts 음성:
   ko-KR-InJoonNeural (남, 다큐/나레이션 추천)
   ko-KR-HyunsuMultilingualNeural (남)
   ko-KR-SunHiNeural (여)
 """
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -58,6 +59,23 @@ def _sapi(text: str, out_wav: Path) -> None:
     )
 
 
+def _say_mac(text: str, out_wav: Path) -> None:
+    aiff = out_wav.with_suffix(".aiff")
+    subprocess.run(["say", "-v", "Yuna", "-o", str(aiff), text],
+                   check=True, capture_output=True, timeout=120)
+    subprocess.run([config.FFMPEG, "-y", "-v", "error", "-i", str(aiff),
+                    "-ar", "24000", "-ac", "1", str(out_wav)],
+                   check=True, capture_output=True, timeout=60)
+    aiff.unlink(missing_ok=True)
+
+
+def _offline_fallback(text: str, out_wav: Path) -> None:
+    if os.name == "nt":
+        _sapi(text, out_wav)
+    else:
+        _say_mac(text, out_wav)
+
+
 def _typecast(text: str, out_wav: Path, voice_id: str, emotion: str | None) -> None:
     from . import typecast_api
     raw = out_wav.with_name(out_wav.stem + "_tc.wav")
@@ -80,8 +98,8 @@ def synth(text: str, out_wav: Path, voice: str = DEFAULT_VOICE,
     try:
         _edge(text, out_wav, voice, rate, pitch)
     except Exception as e:
-        print(f"  (edge-tts 실패 → SAPI 폴백: {e})")
-        _sapi(text, out_wav)
+        print(f"  (edge-tts 실패 → 오프라인 TTS 폴백: {e})")
+        _offline_fallback(text, out_wav)
 
 
 # 팟캐스트풍 "따뜻한 마이크" 후처리: 저역 정리 + 바디/프레즌스 EQ + 하쉬 억제 +

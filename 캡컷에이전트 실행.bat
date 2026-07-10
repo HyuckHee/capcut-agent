@@ -1,10 +1,6 @@
 @echo off
 chcp 65001 >nul
+rem 윈도우용 실행 래퍼 — 더블클릭하면 run.py가 나머지를 처리한다.
 cd /d "%~dp0"
-echo.
-echo   캡컷 에이전트 시작 중... 브라우저가 곧 열립니다.
-echo   (이 창을 닫으면 서버가 종료됩니다)
-echo.
-start "" http://localhost:8765
-.venv\Scripts\python.exe -m uvicorn web.server:app --port 8765 --app-dir "%~dp0"
+where py >nul 2>nul && (py -3 run.py) || (python run.py)
 pause

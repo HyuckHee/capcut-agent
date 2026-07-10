@@ -44,21 +44,20 @@ flowchart LR
 
 ## 🚀 실행
 
-요구사항: Windows, Python 3.11+, ffmpeg (`winget install Gyan.FFmpeg`)
+요구사항: Windows 또는 macOS, Python 3.11+, ffmpeg
+(Windows: `winget install Gyan.FFmpeg` / macOS: `brew install ffmpeg`)
 
-```powershell
-python -m venv .venv
-.venv\Scripts\pip install pycapcut faster-whisper edge-tts fonttools fastapi "uvicorn[standard]" python-multipart
-
-# 웹 UI
-.venv\Scripts\python.exe -m uvicorn web.server:app --port 8765 --app-dir .
+```bash
+# 웹 UI — venv 생성·의존성 설치·서버 시작·브라우저 열기까지 자동 (윈도우/맥 공용)
+python run.py
 # → http://localhost:8765
+# 더블클릭 실행: 캡컷에이전트 실행.bat (윈도우) / 캡컷에이전트 실행.command (맥)
 
-# CLI
-.venv\Scripts\python.exe render_cinema.py --spec my_video.json
+# CLI (venv 파이썬 사용 — 윈도우는 .venv\Scripts\python.exe, 맥은 .venv/bin/python)
+.venv/bin/python render_cinema.py --spec my_video.json
 
 # 테스트
-.venv\Scripts\python.exe -m pytest tests/
+.venv/bin/python -m pytest tests/
 ```
 
 spec JSON 예시:

@@ -1,6 +1,6 @@
 """캡컷 에이전트 웹 — 업로드한 영상으로 spec을 짜고 렌더링하는 로컬 사이트.
 
-실행:  .venv\\Scripts\\python.exe -m uvicorn web.server:app --port 8765
+실행:  python run.py  (윈도우/맥 공용 — venv 생성·의존성 설치까지 자동)
 접속:  http://localhost:8765
 """
 import asyncio
@@ -388,7 +388,7 @@ def run_job(job_id: str, spec: dict):
         spec_path.write_text(json.dumps(spec, ensure_ascii=False, indent=1), encoding="utf-8")
         q.put("STEP:나레이션 합성")
         proc = subprocess.Popen(
-            [str(ROOT / ".venv" / "Scripts" / "python.exe"),
+            [sys.executable,
              str(ROOT / "render_cinema.py"), "--spec", str(spec_path)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8", errors="replace", cwd=str(ROOT))
