@@ -6,6 +6,7 @@ requirements.txt가 바뀌면 다음 실행 때 자동으로 재설치한다.
 """
 import glob
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,23 @@ ROOT = Path(__file__).resolve().parent
 VENV = ROOT / ".venv"
 PORT = 8765
 MIN_PY = (3, 11)
+
+
+def _apple_silicon() -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        out = subprocess.run(["sysctl", "-n", "hw.optional.arm64"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        return out == "1"
+    except OSError:
+        return False
+
+
+def _is_rosetta() -> bool:
+    """애플 실리콘에서 인텔(x86_64) 모드로 도는지 — 콘다 인텔 빌드 등이 원인.
+    이 상태로 서버를 띄우면 arm64 휠(.so)을 못 읽어 크래시한다."""
+    return platform.machine() == "x86_64" and _apple_silicon()
 
 
 def _newer_python_candidates() -> list[str]:
@@ -38,20 +56,28 @@ def _newer_python_candidates() -> list[str]:
     return cands
 
 
-def _reexec_with_newer_python():
-    """현재 인터프리터가 구버전이면 새 파이썬을 찾아 run.py를 다시 실행."""
+def _probe(cmd: list[str]) -> bool:
+    try:
+        return subprocess.run(cmd + ["--version"], capture_output=True, timeout=10).returncode == 0
+    except OSError:
+        return False
+
+
+def _reexec_suitable_python(reason: str):
+    """구버전/로제타 인터프리터면 적합한 파이썬을 찾아 run.py를 다시 실행."""
+    fail_msg = (f"{reason}\n적합한 파이썬을 찾지 못했습니다. "
+                "https://www.python.org/downloads/ 에서 최신 버전을 설치해주세요.")
     if os.environ.get("CAPCUT_RUN_REEXEC"):  # 재실행 루프 방지
-        sys.exit(f"Python {MIN_PY[0]}.{MIN_PY[1]} 이상이 필요합니다 (현재 {sys.version.split()[0]}).\n"
-                 "https://www.python.org/downloads/ 에서 최신 버전을 설치해주세요.")
+        sys.exit(fail_msg)
     env = dict(os.environ, CAPCUT_RUN_REEXEC="1")
+    # 애플 실리콘이면 arch로 네이티브 실행 강제 — 로제타 부모의 자식은 x86_64를 물려받으므로
+    prefix = ["arch", "-arm64"] if _apple_silicon() else []
     for cand in _newer_python_candidates():
-        cmd = [cand, "-3", str(ROOT / "run.py")] if cand == "py" else [cand, str(ROOT / "run.py")]
-        try:
-            sys.exit(subprocess.call(cmd, env=env))
-        except OSError:
+        base = prefix + ([cand, "-3"] if cand == "py" else [cand])
+        if not _probe(base):  # 인텔 전용 빌드 등 arm64 실행 불가면 다음 후보로
             continue
-    sys.exit(f"Python {MIN_PY[0]}.{MIN_PY[1]} 이상이 필요합니다 (현재 {sys.version.split()[0]}).\n"
-             "https://www.python.org/downloads/ 에서 최신 버전을 설치해주세요.")
+        sys.exit(subprocess.call(base + [str(ROOT / "run.py")], env=env))
+    sys.exit(fail_msg)
 
 
 def venv_python() -> Path:
@@ -77,7 +103,9 @@ def ensure_venv() -> Path:
 
 def main():
     if sys.version_info < MIN_PY:
-        _reexec_with_newer_python()
+        _reexec_suitable_python(f"Python {MIN_PY[0]}.{MIN_PY[1]} 이상이 필요합니다 (현재 {sys.version.split()[0]}).")
+    if _is_rosetta():
+        _reexec_suitable_python("인텔(x86_64) 모드 파이썬 감지 — 애플 실리콘 네이티브로 전환합니다.")
     os.chdir(ROOT)
     py = ensure_venv()
     print()
