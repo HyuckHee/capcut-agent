@@ -473,8 +473,21 @@ def main() -> None:
                     lines.append(f"[fg{i}]scale={out_w}:-2[fgs{i}];")
                     lines.append(f"[bgb{i}][fgs{i}]overlay=(W-w)/2:(H-h)/2,setsar=1[v{i}];")
             else:
-                norm = "1080:1920" if src_portrait else "1920:1080"
-                lines.append(f"{head}scale={norm},setsar=1[v{i}];")
+                nw, nh = (1080, 1920) if src_portrait else (1920, 1080)
+                w0, h0 = display_dims(path)
+                if rot in (90, 270, -90):
+                    w0, h0 = h0, w0
+                # 캔버스와 방향이 다른 소스(예: 가로 롱폼에 세로 촬영본)는 늘리지 않고
+                # 블러 확대 배경 + 원본 중앙 (src_portrait 모드의 가로 처리와 동일 기법)
+                if (w0 < h0) != (nw < nh):
+                    lines.append(f"{head}split=2[bg{i}][fg{i}];")
+                    lines.append(f"[bg{i}]scale={nw}:{nh}:force_original_aspect_ratio=increase,"
+                                 f"crop={nw}:{nh},boxblur=24:2[bgb{i}];")
+                    lines.append(f"[fg{i}]scale=-2:{nh}[fgs{i}];" if nw > nh
+                                 else f"[fg{i}]scale={nw}:-2[fgs{i}];")
+                    lines.append(f"[bgb{i}][fgs{i}]overlay=(W-w)/2:(H-h)/2,setsar=1[v{i}];")
+                else:
+                    lines.append(f"{head}scale={nw}:{nh},setsar=1[v{i}];")
             if spd != 1.0:  # 배속 (0.5 = 슬로우모션, 오디오는 피치 유지)
                 # atempo는 [0.5, 100] 범위만 지원 → 벗어나면 체인으로 분할 (예: 0.4 = 0.5×0.8)
                 tempos, rest = [], spd
