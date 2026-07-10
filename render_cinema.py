@@ -26,6 +26,7 @@ from app import config
 from app.narrate import synth, warm, DEFAULT_VOICE, DEFAULT_RATE, DEFAULT_PITCH
 
 OUT_W, OUT_H = 1080, 1920
+IMG_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}  # 정지 이미지 세그먼트 (b-a = 표시 초)
 FONT_SOURCE = (Path("C:/Windows/Fonts/malgunbd.ttf") if os.name == "nt"   # 맑은고딕 (대사 자막용)
                else Path(__file__).resolve().parent / "library" / "fonts" / "Pretendard-ExtraBold.otf")
 FONT_EXP = Path(__file__).resolve().parent / "library" / "fonts" / "Pretendard-ExtraBold.otf"
@@ -219,6 +220,8 @@ def main() -> None:
                 zoom = float(s[5]) if len(s) > 5 else 1.0
                 zcx = float(s[6]) if len(s) > 6 else 0.5
                 zcy = float(s[7]) if len(s) > 7 else 0.5
+                if Path(s[0]).suffix.lower() in IMG_EXTS:
+                    spd = 1.0  # 이미지는 배속 개념 없음 (표시 시간 = b-a)
                 segs.append((s[0], float(s[1]), float(s[2]), spd, rot, zoom, zcx, zcy))
             else:
                 segs.append((video, float(s[0]), float(s[1]), 1.0, 0, 1.0, 0.5, 0.5))
@@ -443,6 +446,17 @@ def main() -> None:
                 zx = min(max(int(w0 * zcx - cw / 2), 0), w0 - cw)
                 zy = min(max(int(h0 * zcy - ch / 2), 0), h0 - ch)
                 zf = f"crop={cw}:{ch}:{zx}:{zy},"
+            if Path(path).suffix.lower() in IMG_EXTS:
+                # 정지 이미지: 첫 프레임을 (b-a)초 반복 + 비율 보존 레터박스, 오디오는 무음
+                dur = round(max(0.1, b - a), 3)
+                tw, th = (out_w, out_h) if (src_portrait and not wide) else (1920, 1080)
+                lines.append(
+                    f"[{src}:v]loop=loop=-1:size=1:start=0,trim=0:{dur},setpts=PTS-STARTPTS,"
+                    f"fps=30,{tp}{zf}scale={tw}:{th}:force_original_aspect_ratio=decrease,"
+                    f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v{i}];")
+                lines.append(f"anullsrc=r=44100:cl=stereo,atrim=0:{dur},asetpts=PTS-STARTPTS[a{i}];")
+                pairs.append(f"[v{i}][a{i}]")
+                continue
             head = (f"[{src}:v]trim={a}:{b},setpts=(PTS-STARTPTS)/{spd},{tp}{zf}" if spd != 1.0
                     else f"[{src}:v]trim={a}:{b},setpts=PTS-STARTPTS,{tp}{zf}")
             if src_portrait and not wide:
