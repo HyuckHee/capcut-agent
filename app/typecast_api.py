@@ -17,6 +17,16 @@ def list_voices() -> list[dict]:
         return json.loads(r.read().decode("utf-8"))
 
 
+def recommend_voices(query: str, count: int = 5) -> list[dict]:
+    """스타일 설명(자연어) → 어울리는 음성 추천. 반환: [{voice_id, voice_name, score}]."""
+    from urllib.parse import urlencode
+    qs = urlencode({"query": query, "count": count})
+    req = urllib.request.Request(f"{API_BASE}/v1/voices/recommendations?{qs}",
+                                 headers={"X-API-KEY": _key()})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
 def tts(text: str, voice_id: str, out_path: Path, *,
         model: str = "ssfm-v30", language: str = "kor",
         emotion: str | None = None, intensity: float = 1.0) -> None:
