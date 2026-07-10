@@ -89,6 +89,11 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <div id="drop">영상을 끌어다 놓거나 클릭해서 선택 (mp4 · mov)</div>
     <input type="file" id="file" accept="video/*" multiple style="display:none">
     <div id="clips"></div>
+    <div class="field" style="margin-top:12px">
+      <label>✏️ 편집 디렉션 (선택 — 편집 추천·나레이션·말풍선·효과음 모든 AI가 참고해요)</label>
+      <textarea id="direction" rows="2" placeholder="예) 10~13초를 슬로우모션으로 한 번 더 보여줘서 강조해줘 · 초반엔 나레이션 없이 강아지 소리만 살려줘 · 엔딩은 잔잔하게"
+        style="width:100%; resize:vertical; font-family:inherit; font-size:13px; line-height:1.5"></textarea>
+    </div>
     <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
       <button onclick="aiRecommend()" id="arBtn" style="border-color:var(--acc); color:var(--acc); padding:10px 16px">🎬 AI 편집 추천</button>
       <button onclick="oneClick()" id="ocBtn" class="acc" style="padding:10px 18px">🪄 원클릭 AI 편집</button>
@@ -302,11 +307,12 @@ async function aiRecommend() {
   try {
     const res = await (await fetch("/api/airecommend", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(), clips: clips.map(c => c.id) }),
+      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
+        direction: $("#direction").value.trim(), clips: clips.map(c => c.id) }),
     })).json();
     if (res.error) throw res.error;
     if (!res.segments || !res.segments.length) throw "추천 구간을 찾지 못했습니다";
-    segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: 1, tags: s.role || "" }));
+    segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: s.spd || 1, tags: s.role || "" }));
     renderSegs();
     const total = res.segments.reduce((t, s) => t + (s.b - s.a), 0).toFixed(1);
     const rows = res.segments.map(s => `<tr><td style="width:70px; color:var(--dim); vertical-align:top">${s.a}~${s.b}s</td><td style="width:64px; color:var(--acc); vertical-align:top">${(s.role || "").replace(/</g, "&lt;")}</td><td>${(s.why || "").replace(/</g, "&lt;")}</td></tr>`).join("");
@@ -331,6 +337,7 @@ async function aiDraft() {
     const res = await (await fetch("/api/aidraft", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
+        direction: $("#direction").value.trim(),
         movie: [$("#logoText").value.trim(), $("#logoSub").value.trim()].filter(Boolean).join(" · "),  // 영화 제목 → Claude의 작품 지식 활용
         subs: subsRows.filter(s => s.text.trim()).map(s => ({ a: s.a, b: s.b, text: s.text.trim() })),  // 대사 구간 회피용
         segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
@@ -701,6 +708,7 @@ async function aiSfx() {
     const res = await (await fetch("/api/aisfx", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
+        direction: $("#direction").value.trim(),
         segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd })) }),
     })).json();
     if (res.error) throw res.error;
@@ -725,6 +733,7 @@ async function aiBubbles() {
     const res = await (await fetch("/api/aibubbles", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
+        direction: $("#direction").value.trim(),
         segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd })) }),
     })).json();
     if (res.error) throw res.error;

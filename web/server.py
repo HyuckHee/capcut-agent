@@ -245,10 +245,12 @@ async def aisfx(payload: dict):
     options = [{"name": s["name"], "label": s["label"]} for s in sfx_list()]
     by_name = {s["name"]: s["path"] for s in sfx_list()}
     synopsis = (payload.get("synopsis") or "").strip()
+    direction = (payload.get("direction") or "").strip()
     preset = payload.get("profile", "wanghee")
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, ai_sfx, segments, style, options, synopsis, preset)
+        result = await loop.run_in_executor(None, ai_sfx, segments, style, options,
+                                            synopsis, preset, direction)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     for s in result["sfx"]:
@@ -272,10 +274,12 @@ async def aibubbles(payload: dict):
     if not find_claude():
         return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
     synopsis = (payload.get("synopsis") or "").strip()
+    direction = (payload.get("direction") or "").strip()
     preset = payload.get("profile", "wanghee")
     loop = asyncio.get_event_loop()
     try:
-        result = await loop.run_in_executor(None, ai_bubbles, segments, style, synopsis, preset)
+        result = await loop.run_in_executor(None, ai_bubbles, segments, style,
+                                            synopsis, preset, direction)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return result
@@ -307,8 +311,9 @@ async def airecommend(payload: dict):
     """원본 클립 전체 + 줄거리를 Claude에게 보여주고 편집 구간을 추천받는다."""
     profile = load_profile(payload.get("profile", "wanghee"))
     style = profile.get("ai_style", "")
-    target_len = float(profile.get("target_len", 45))
-    max_len = 59.0 if payload.get("profile") == "cinema" else 90.0
+    target_len = float(profile.get("target_len", 50))
+    # 쇼츠 40~60초 규격. cinema는 Content ID 차단 회피 위해 59초 상한 유지
+    max_len = 59.0 if payload.get("profile") == "cinema" else 60.0
     clip_ids = payload["clips"]
     clips = [{"path": CLIPS[c]["path"], "duration": CLIPS[c]["duration"]}
              for c in clip_ids if c in CLIPS]
@@ -317,10 +322,11 @@ async def airecommend(payload: dict):
     if not find_claude():
         return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
     synopsis = (payload.get("synopsis") or "").strip()
+    direction = (payload.get("direction") or "").strip()
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(
-            None, recommend_edit, clips, synopsis, style, target_len, max_len)
+            None, recommend_edit, clips, synopsis, style, target_len, max_len, direction)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     for seg in result["segments"]:
@@ -350,10 +356,11 @@ async def aidraft(payload: dict):
                 for d in (payload.get("subs") or []) if d.get("text", "").strip()]
     preset = payload.get("profile", "wanghee")
     movie = (payload.get("movie") or "").strip()  # 작품명 → Claude의 기존 영화 지식 활용
+    direction = (payload.get("direction") or "").strip()
     loop = asyncio.get_event_loop()
     try:
         result = await loop.run_in_executor(
-            None, ai_draft, segments, style, synopsis, dialogue, preset, movie)
+            None, ai_draft, segments, style, synopsis, dialogue, preset, movie, direction)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
     return result

@@ -160,9 +160,23 @@ def observe_prompt(montages: list[dict], synopsis: str, movie: str = "") -> str:
     return "\n".join(lines)
 
 
+def _direction_block(direction: str) -> list[str]:
+    """편집자가 웹 UI 코멘트란에 남긴 편집 디렉션 → 프롬프트 블록."""
+    if not direction.strip():
+        return []
+    return [
+        "",
+        "[편집자 디렉션 — 최우선 반영]",
+        direction.strip(),
+        "- 위는 편집자가 직접 남긴 요청이다. 다른 규칙과 충돌하면 디렉션을 우선하되,",
+        "  화면에 없는 장면을 지어내는 것만은 금지다.",
+    ]
+
+
 def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: float,
                    dialogue: list[dict] | None = None,
-                   examples: list[dict] | None = None, movie: str = "") -> str:
+                   examples: list[dict] | None = None, movie: str = "",
+                   direction: str = "") -> str:
     """2단계: 관찰 로그에 앵커링한 나레이션·제목. dialogue=[{a,b,text}] 대사 구간은 피해서 배치.
 
     movie(작품명)를 주면 Claude가 이미 아는 그 영화의 줄거리·인물 지식을 활용한다
@@ -213,6 +227,7 @@ def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: f
             "- 나레이션은 at부터 약 3초간 재생된다 — at ~ at+3초가 위 구간과 겹치지 않게 대사 사이 틈에 배치해라.",
             "- 틈이 3초보다 짧으면 그 자리는 건너뛰어라. 대사 내용은 맥락 참고용으로 활용해도 된다.",
         ]
+    lines += _direction_block(direction)
     lines += [
         "",
         "[나레이션 규칙]",
@@ -249,7 +264,7 @@ def run_claude(prompt: str, cwd: Path, model: str | None = None) -> dict:
 
 def ai_draft(segments: list[dict], style: str, synopsis: str = "",
              dialogue: list[dict] | None = None, preset: str = "",
-             movie: str = "") -> dict:
+             movie: str = "", direction: str = "") -> dict:
     """segments: [{path, a, b, spd, tags}] → {title, out_name, narrs, observations, synopsis_check?}.
 
     2단계: (1) 촘촘한 몽타주로 화면 관찰 로그 작성 (줄거리 제공 시 일치 검사) →
@@ -265,7 +280,8 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "",
     observations = obs.get("observations", [])
 
     data = run_claude(narrate_prompt(observations, style, synopsis, total, dialogue,
-                                     narr_examples(preset) if preset else None, movie),
+                                     narr_examples(preset) if preset else None, movie,
+                                     direction),
                       workdir, MODEL_SMART)
     narrs = [{"at": float(n["at"]), "text": str(n["text"]).strip()}
              for n in data.get("narrs", []) if str(n.get("text", "")).strip()]
@@ -370,7 +386,8 @@ def sfx_usage(preset: str, top: int = 8) -> list[tuple[str, int]]:
 
 
 def bubble_prompt(montages: list[dict], style: str, synopsis: str,
-                  total: float, examples: list[dict], preset: str = "wanghee") -> str:
+                  total: float, examples: list[dict], preset: str = "wanghee",
+                  direction: str = "") -> str:
     if preset == "cinema":
         role = "너는 영화·드라마 짤 쇼츠의 말풍선 자막 작가다."
         kind = "- 인물의 속마음·리액션 짧은 자막(예: 환청인가..?, (당황)) 또는 상황 강조 텍스트"
@@ -399,6 +416,7 @@ def bubble_prompt(montages: list[dict], style: str, synopsis: str,
         ]
         for e in examples:
             lines.append(f"- \"{e['text']}\"")
+    lines += _direction_block(direction)
     lines += [
         "",
         "[임무] 화면에서 실제로 보이는 행동에 맞춰 말풍선을 제안해라.",
@@ -427,7 +445,7 @@ def _out_to_src(segments: list[dict], t: float) -> tuple[dict, float]:
 
 
 def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
-               preset: str = "wanghee") -> dict:
+               preset: str = "wanghee", direction: str = "") -> dict:
     """segments → {bubbles:[{a,b,text,fx,fy}]}. 텍스트·시각은 Claude, 좌표는 피사체 추적.
 
     few-shot 예시는 같은 채널(preset)의 확정본만 사용한다.
@@ -438,7 +456,7 @@ def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
     montages, total = build_montages(segments, workdir)
     data = run_claude(
         bubble_prompt(montages, style, synopsis, total,
-                      _bubble_examples(preset), preset), workdir, MODEL_FAST)
+                      _bubble_examples(preset), preset, direction), workdir, MODEL_FAST)
 
     track_cache: dict[int, list] = {}
     bubbles = []
@@ -477,7 +495,7 @@ def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
 
 
 def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
-           synopsis: str = "", preset: str = "") -> dict:
+           synopsis: str = "", preset: str = "", direction: str = "") -> dict:
     """편집본을 관찰해 효과음 배치를 제안. sfx_options: [{name, label}]. → {sfx:[{at, name, why}]}.
 
     preset을 주면 이 채널에서 자주 쓴 효과음 빈도를 참고시키고, 제안을 로그에 남긴다.
@@ -507,6 +525,7 @@ def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
         lines += ["", "[이 채널에서 실제 자주 쓴 효과음 — 취향 참고용, 화면에 맞는 소리가 항상 우선]"]
         for name, cnt in usage:
             lines.append(f"- {name} ({cnt}회)")
+    lines += _direction_block(direction)
     lines += [
         "",
         "[임무] 화면에 보이는 행동·순간에 어울리는 효과음을 배치해라.",
@@ -530,7 +549,7 @@ def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
 
 
 def recommend_prompt(clip_montages: list[dict], synopsis: str, style: str,
-                     target_len: float, max_len: float) -> str:
+                     target_len: float, max_len: float, direction: str = "") -> str:
     """원본 전체 관찰 몽타주 + 줄거리 → 편집 구간 추천 프롬프트."""
     lines = [
         "너는 유튜브 쇼츠 편집자다. 아래는 '원본 영상 전체'를 시간순으로 훑은 몽타주다.",
@@ -547,27 +566,35 @@ def recommend_prompt(clip_montages: list[dict], synopsis: str, style: str,
     lines += [
         "",
         f"[채널 스타일]\n{style}",
+    ]
+    lines += _direction_block(direction)
+    lines += [
         "",
         "[임무] 위 줄거리의 흐름(도입 → 복선 → 반전 → 결말)이 담기도록, 원본에서 쇼츠에 넣을",
         "구간을 골라라. 화면에 실제로 보이는 것을 근거로 고르되, 어느 장면이 어느 대목인지는 줄거리로 해석해라.",
         "[규칙]",
-        f"- 선택 구간 총합 {target_len:.0f}초 내외, 최대 {max_len:.0f}초 (쇼츠 한도).",
+        f"- 선택 구간 총합(배속 반영)은 40~{max_len:.0f}초 사이, {target_len:.0f}초 내외가 목표 (쇼츠 규격).",
+        "- 소스가 짧아 40초가 안 되면 결정적 순간을 spd 0.4~0.7 슬로우로 늘리거나,",
+        "  같은 순간을 정속 → 슬로우로 한 번 더 보여주는 리플레이 연출로 채워라.",
         "- 반전·결정적 순간은 반드시 포함. 복선 장면을 반전보다 앞에 배치.",
         "- 각 구간 2~10초, 시간순. 각 클립 원본 시각 기준 a<b.",
+        "- spd는 기본 1.0(정속), 슬로우 강조 구간만 0.4~0.7.",
         "- 화면으로 확인 안 되는 장면을 지어내지 말 것. 줄거리에만 있고 화면에 없으면 note에 밝혀라.",
         "",
         "아래 JSON만 출력해라:",
-        '{"segments": [{"clip": 0, "a": 0.0, "b": 5.0, "role": "도입", "why": "화면 근거"}],'
+        '{"segments": [{"clip": 0, "a": 0.0, "b": 5.0, "spd": 1.0, "role": "도입", "why": "화면 근거"}],'
         ' "note": "편집 의도/한계 한두 문장"}',
     ]
     return "\n".join(lines)
 
 
 def recommend_edit(clips: list[dict], synopsis: str, style: str,
-                   target_len: float = 45.0, max_len: float = 59.0) -> dict:
+                   target_len: float = 50.0, max_len: float = 60.0,
+                   direction: str = "") -> dict:
     """원본 클립 전체 + 줄거리 → 편집 구간 추천. clips=[{path, duration}].
 
-    반환: {segments:[{clip, a, b, role, why}], note}. clip은 clips 리스트 인덱스.
+    반환: {segments:[{clip, a, b, spd, role, why}], note}. clip은 clips 리스트 인덱스.
+    direction: 편집자 코멘트(예: "10~13초를 슬로우로 한 번 더") — 프롬프트에 최우선 반영.
     """
     workdir = FRAME_DIR / ("rec_" + uuid.uuid4().hex[:8])
     clip_montages = []
@@ -576,7 +603,7 @@ def recommend_edit(clips: list[dict], synopsis: str, style: str,
         clip_montages.append({"ci": ci, "duration": float(c["duration"]), "montages": ms})
 
     data = run_claude(
-        recommend_prompt(clip_montages, synopsis, style, target_len, max_len),
+        recommend_prompt(clip_montages, synopsis, style, target_len, max_len, direction),
         workdir, MODEL_SMART)
 
     segments = []
@@ -587,7 +614,8 @@ def recommend_edit(clips: list[dict], synopsis: str, style: str,
         a, b = float(s["a"]), float(s["b"])
         a = max(0.0, min(a, clips[ci]["duration"]))
         b = max(a + 0.5, min(b, clips[ci]["duration"]))
-        segments.append({"clip": ci, "a": round(a, 1), "b": round(b, 1),
+        spd = min(2.0, max(0.3, float(s.get("spd", 1) or 1)))
+        segments.append({"clip": ci, "a": round(a, 1), "b": round(b, 1), "spd": spd,
                          "role": str(s.get("role", "")), "why": str(s.get("why", ""))})
     return {"segments": segments, "note": data.get("note", "")}
 
