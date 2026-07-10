@@ -28,3 +28,6 @@ logs/
 library/sfx/dog_*.wav
 library/sfx/car_*.wav
 library/sfx/fx_*.wav
+
+# 로컬 개발 도구 설정 (OS별 경로 상이)
+.claude/

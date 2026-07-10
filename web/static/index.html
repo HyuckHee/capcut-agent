@@ -68,6 +68,16 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
 .stat b { display:block; font-size:18px; font-weight:600; }
 .stat span { font-size:11px; color:var(--dim); }
 .hint { font-size:12px; color:var(--dim); margin-top:8px; }
+/* 단계 페이지 */
+#pagenav { display:flex; gap:6px; margin-top:20px; }
+.pn { flex:1; text-align:center; padding:9px 4px; font-size:13px; color:var(--dim);
+      border:1px solid var(--line); border-radius:8px; background:#101010; cursor:pointer;
+      user-select:none; }
+.pn.on { border-color:var(--acc); color:var(--acc); background:rgba(34,197,94,.06); }
+.page { display:none; }
+.page.on { display:block; }
+.pgfoot { display:flex; justify-content:space-between; gap:10px; margin-top:18px; }
+.pgfoot .spacer { flex:1; }
 </style>
 </head>
 <body>
@@ -75,6 +85,14 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
   <h1><span class="dot"></span>캡컷 에이전트</h1>
   <div class="sub">영상을 올리고 · 구간과 나레이션을 짜고 · 렌더링합니다</div>
 
+  <div id="pagenav">
+    <div class="pn on" data-pg="1" onclick="gotoPage(1)">① 준비</div>
+    <div class="pn" data-pg="2" onclick="gotoPage(2)">② 컷 편집</div>
+    <div class="pn" data-pg="3" onclick="gotoPage(3)">③ 연출</div>
+    <div class="pn" data-pg="4" onclick="gotoPage(4)">④ 렌더</div>
+  </div>
+
+  <section class="page on" id="page1">
   <div class="card">
     <h2>프리셋 <span class="hint" id="presetHint">먼저 채널 유형을 선택하세요</span></h2>
     <div class="presets">
@@ -90,8 +108,8 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <input type="file" id="file" accept="video/*" multiple style="display:none">
     <div id="clips"></div>
     <div class="field" style="margin-top:12px">
-      <label>✏️ 편집 디렉션 (선택 — 편집 추천·나레이션·말풍선·효과음 모든 AI가 참고해요)</label>
-      <textarea id="direction" rows="2" placeholder="예) 10~13초를 슬로우모션으로 한 번 더 보여줘서 강조해줘 · 초반엔 나레이션 없이 강아지 소리만 살려줘 · 엔딩은 잔잔하게"
+      <label>줄거리 · 맥락 (선택 — AI 편집 추천·나레이션이 참고. 유명 영화는 ④렌더의 '영화 제목'만 채워도 AI가 아는 줄거리를 활용해요)</label>
+      <textarea id="synopsis" rows="3" placeholder="예) 맹인 침술사가 사실 밤에는 눈이 보인다. 궁에서 세자 독살 현장을 목격하지만, 눈이 보인다는 걸 들키면 죽는다."
         style="width:100%; resize:vertical; font-family:inherit; font-size:13px; line-height:1.5"></textarea>
     </div>
     <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap">
@@ -101,7 +119,11 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <div class="hint" id="arHint" style="margin-top:8px">🎬 <b>AI 편집 추천</b>: 원본 전체를 보고 줄거리 흐름(복선·반전)에 맞는 구간을 골라줍니다. 아래 <b>줄거리</b>를 먼저 적으면 정확해져요. · 🪄 <b>원클릭</b>: 구간+제목+나레이션 전체 자동</div>
     <div id="arInfo" style="display:none; margin-top:10px"></div>
   </div>
+  <div class="pgfoot"><span class="spacer"></span>
+    <button class="acc" onclick="gotoPage(2)">다음: ② 컷 편집 →</button></div>
+  </section>
 
+  <section class="page" id="page2">
   <div class="card" id="playerCard" style="display:none">
     <h2>플레이어 <span class="chip" id="plClip">-</span> <span class="chip" id="plTime">0.0s</span></h2>
     <div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap">
@@ -148,6 +170,17 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
       <div class="stat"><b id="stLen">0.0s</b><span>예상 길이</span></div>
       <div class="stat"><b id="stNarr">0</b><span>나레이션</span></div></div>
   </div>
+  <div class="pgfoot"><button onclick="gotoPage(1)">← ① 준비</button>
+    <button class="acc" onclick="gotoPage(3)">세그먼트 확정, 다음: ③ 연출 →</button></div>
+  </section>
+
+  <section class="page" id="page3">
+  <div class="card">
+    <h2>편집 디렉션 <span class="chip">시각 = 완성 영상 기준</span></h2>
+    <div class="hint" style="margin-bottom:10px">세그먼트가 확정된 뒤에 적으세요 — 여기 적는 시각(초)은 <b>편집된 완성 영상 타임라인</b> 기준이라, 아래 나레이션·말풍선·효과음 AI가 정확히 알아듣습니다</div>
+    <textarea id="direction" rows="2" placeholder="예) 10~13초를 슬로우모션으로 한 번 더 보여줘서 강조해줘 · 초반엔 나레이션 없이 강아지 소리만 살려줘 · 엔딩은 잔잔하게"
+      style="width:100%; resize:vertical; font-family:inherit; font-size:13px; line-height:1.5"></textarea>
+  </div>
 
   <div class="card" id="subsCard">
     <h2>대사 자막 <span class="chip">원본 속 실제 대사</span></h2>
@@ -162,11 +195,6 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
 
   <div class="card">
     <h2>나레이션 <span class="chip">시각 = 타임라인 초</span></h2>
-    <div class="field" style="margin-bottom:12px">
-      <label>줄거리 · 맥락 (선택 — 유명 영화는 아래 '영화 제목'만 채워도 AI가 아는 줄거리를 활용해요. 여긴 반전·결말 등 강조하고 싶은 포인트만)</label>
-      <textarea id="synopsis" rows="3" placeholder="예) 맹인 침술사가 사실 밤에는 눈이 보인다. 궁에서 세자 독살 현장을 목격하지만, 눈이 보인다는 걸 들키면 죽는다."
-        style="width:100%; resize:vertical; font-family:inherit; font-size:13px; line-height:1.5"></textarea>
-    </div>
     <table id="narrT"><thead><tr><th style="width:80px">시각(s)</th><th>대사 (말끝 … 가능 · 자막은 문장별 자동 싱크)</th><th style="width:96px">음성</th><th style="width:120px">음량</th><th></th></tr></thead><tbody></tbody></table>
     <div style="margin-top:10px; display:flex; gap:8px; align-items:center">
       <button onclick="addNarr()">+ 나레이션</button>
@@ -197,7 +225,11 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
       <span class="hint" id="sfxHint">AI가 장면에 맞는 효과음을 자동 배치합니다</span>
     </div>
   </div>
+  <div class="pgfoot"><button onclick="gotoPage(2)">← ② 컷 편집</button>
+    <button class="acc" onclick="gotoPage(4)">다음: ④ 렌더 →</button></div>
+  </section>
 
+  <section class="page" id="page4">
   <div class="card">
     <h2>설정</h2>
     <div class="grid3">
@@ -240,12 +272,23 @@ button.mini { padding:3px 9px; font-size:12px; color:var(--dim); }
     <div id="log"></div>
     <div id="result"></div>
   </div>
+  <div class="pgfoot"><button onclick="gotoPage(3)">← ③ 연출</button><span class="spacer"></span></div>
+  </section>
 </div>
 
 <script>
 let clips = [], segs = [], preset = null;
 
 const $ = s => document.querySelector(s);
+
+// ── 단계 페이지 이동
+function gotoPage(n) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("on"));
+  $("#page" + n).classList.add("on");
+  document.querySelectorAll("#pagenav .pn").forEach(el =>
+    el.classList.toggle("on", el.dataset.pg == n));
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
 
 document.querySelectorAll(".preset").forEach(el => el.onclick = () => {
   document.querySelectorAll(".preset").forEach(e => e.classList.remove("on"));
@@ -307,8 +350,7 @@ async function aiRecommend() {
   try {
     const res = await (await fetch("/api/airecommend", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
-        direction: $("#direction").value.trim(), clips: clips.map(c => c.id) }),
+      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(), clips: clips.map(c => c.id) }),
     })).json();
     if (res.error) throw res.error;
     if (!res.segments || !res.segments.length) throw "추천 구간을 찾지 못했습니다";
@@ -321,6 +363,7 @@ async function aiRecommend() {
       (res.note ? ` — ${res.note.replace(/</g, "&lt;")}` : "") + `</div>` +
       `<table style="font-size:12px">${rows}</table>`;
     $("#arInfo").style.display = "block";
+    gotoPage(2);  // 추천 결과를 세그먼트 표에서 바로 확인
   } catch (e) {
     alert("AI 편집 추천 실패: " + e);
   } finally {
@@ -391,6 +434,7 @@ async function oneClick() {
   btn.disabled = false;
   hint.textContent = ok ? "✓ 셋팅 완료 — 세그먼트·나레이션 확인 후 렌더링을 누르세요"
                         : "구간은 배치됨 — 나레이션은 수동으로 작성하세요";
+  gotoPage(2);  // 배치된 세그먼트부터 순서대로 확인
 }
 
 // ── 업로드 폴더 용량
