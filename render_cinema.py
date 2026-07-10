@@ -447,7 +447,14 @@ def main() -> None:
                 norm = "1080:1920" if src_portrait else "1920:1080"
                 lines.append(f"{head}scale={norm},setsar=1[v{i}];")
             if spd != 1.0:  # 배속 (0.5 = 슬로우모션, 오디오는 피치 유지)
-                lines.append(f"[{src}:a]atrim={a}:{b},asetpts=PTS-STARTPTS,atempo={spd}[a{i}];")
+                # atempo는 [0.5, 100] 범위만 지원 → 벗어나면 체인으로 분할 (예: 0.4 = 0.5×0.8)
+                tempos, rest = [], spd
+                while rest < 0.5:
+                    tempos.append(0.5)
+                    rest /= 0.5
+                tempos.append(round(rest, 4))
+                chain = ",".join(f"atempo={t}" for t in tempos)
+                lines.append(f"[{src}:a]atrim={a}:{b},asetpts=PTS-STARTPTS,{chain}[a{i}];")
             else:
                 lines.append(f"[{src}:a]atrim={a}:{b},asetpts=PTS-STARTPTS[a{i}];")
             pairs.append(f"[v{i}][a{i}]")
