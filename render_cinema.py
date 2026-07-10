@@ -518,19 +518,24 @@ def main() -> None:
             # 줄 간격을 박스 높이(글자+패딩 16×2)에 정확히 맞춰 박스끼리 겹침(진해짐)도 틈도 없게
             title_gap = max(title_gap, title_size + 32)
         from app.bubble_png import has_emoji as _has_emoji, render_text_png
+        # 줄별 y 커서: 이모지 줄(PNG)은 실제 이미지 높이가 title_gap보다 클 수 있어
+        # 고정 간격 대신 렌더된 높이만큼 내려야 다음 줄과 겹치지 않는다
+        ty = title_y
         for li, line in enumerate(title_lines):
             if _has_emoji(line):
                 # 이모지 포함 제목: drawtext는 이모지 글리프가 없어 깨짐 → PIL 컬러 렌더 PNG 오버레이
-                render_text_png(line, tmp / f"title{li}.png", font_path=FONT_EXP,
-                                fontsize=title_size, stroke=5, box=bool(title_box))
+                _pw, _ph = render_text_png(line, tmp / f"title{li}.png", font_path=FONT_EXP,
+                                           fontsize=title_size, stroke=5, box=bool(title_box))
                 lines.append(f"movie=title{li}.png[timg{li}];")
-                lines.append(f"[{vin}][timg{li}]overlay=(W-w)/2:{title_y + li * title_gap}[vtt{li}];")
+                lines.append(f"[{vin}][timg{li}]overlay=(W-w)/2:{ty}[vtt{li}];")
+                ty += max(title_gap, _ph - 6)
             else:
                 (tmp / f"title{li}.txt").write_text(line, encoding="utf-8")
                 lines.append(
                     f"[{vin}]drawtext=fontfile=fontx.otf:textfile=title{li}.txt"
                     f":fontsize={title_size}:fontcolor=white:borderw=5:bordercolor=black"
-                    f"{title_box}:x=(w-text_w)/2:y={title_y + li * title_gap}[vtt{li}];")
+                    f"{title_box}:x=(w-text_w)/2:y={ty}[vtt{li}];")
+                ty += title_gap
             vin = f"vtt{li}"
 
         for si, (t0, t1, text) in enumerate(subs):
