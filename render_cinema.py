@@ -238,10 +238,11 @@ def main() -> None:
                               entry.get("wav"), entry.get("caption"),
                               float(entry.get("vol", 1.0)),
                               bool(entry.get("speak", True)),
-                              entry.get("voice")))
+                              entry.get("voice"),
+                              float(entry.get("caption_hold", 0))))  # 자막 유지 연장(초)
             else:
                 wav = entry[2] if len(entry) > 2 else None
-                narrs.append((float(entry[0]), entry[1], wav, None, 1.0, True, None))
+                narrs.append((float(entry[0]), entry[1], wav, None, 1.0, True, None, 0.0))
         # 말풍선 자막: [[a, b, "텍스트", fx, fy]] — fx/fy는 화면 비율(0~1), 주아체로 피사체 옆에 표시
         bubbles = sp.get("bubbles", [])
         # 효과음: [[at, 파일경로, vol]] — 지정 시각에 강조음 삽입
@@ -283,7 +284,7 @@ def main() -> None:
                             subs.append((cursor + s0 - a, cursor + s1 - a, s["text"]))
                 cursor += b - a
         exps = parse_ranges(args.exp)
-        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None, 1.0, True, None)
+        narrs = [(float(s.split(":", 1)[0]), s.split(":", 1)[1].strip(), None, None, 1.0, True, None, 0.0)
                  for s in args.narr]
         bubbles = []
         sfx = []
@@ -342,7 +343,7 @@ def main() -> None:
         cache_dir = Path(__file__).resolve().parent / ".cache" / "narr"
         cache_dir.mkdir(parents=True, exist_ok=True)
         narr_files = []
-        for ni, (at, text, wavsrc, _cap, vol, speak, nvoice) in enumerate(narrs):
+        for ni, (at, text, wavsrc, _cap, vol, speak, nvoice, _chold) in enumerate(narrs):
             if not speak:  # 자막만 — TTS 합성 없음 (자막 길이는 아래에서 글자수로 추정)
                 narr_files.append((at, None, 0.0, vol))
                 continue
@@ -387,13 +388,16 @@ def main() -> None:
 
         if narr_captions:
             exps = []
-            for (at, text, _src, cap, _vol, speak, _nv), (_, wavf, dur, _v) in zip(narrs, narr_files):
+            for (at, text, _src, cap, _vol, speak, _nv, chold), (_, wavf, dur, _v) in zip(narrs, narr_files):
                 if not speak:  # 자막만: whisper 싱크 없이 글자수 기반 표시 시간 추정
                     ctext = (cap or text).replace("…", "").rstrip(".").strip()
                     est = min(6.0, max(1.3, 0.62 + 0.145 * len(ctext)))
                     exps.append((at, at + est, ctext, exp_color))
                     continue
-                for c0, c1, ctext in cached_sync(cap or text, wavf, dur, caption_mode):
+                chunks = [list(c) for c in cached_sync(cap or text, wavf, dur, caption_mode)]
+                if chunks and chold:
+                    chunks[-1][1] += chold  # 마지막 자막을 붙잡아 둠 (긴 괄호 부연 등 읽을 시간)
+                for c0, c1, ctext in chunks:
                     # 주아체에 '…' 글리프가 없어 네모로 깨짐 → 자막에서는 제거 (음성엔 유지)
                     ctext_clean = ctext.replace("…", "").rstrip(".").strip()
                     # keywords 미지정 시 단일색(exp_color). 지정 시에만 키워드 구 강조
