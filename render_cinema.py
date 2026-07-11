@@ -452,13 +452,25 @@ def main() -> None:
                 zy = min(max(int(h0 * zcy - ch / 2), 0), h0 - ch)
                 zf = f"crop={cw}:{ch}:{zx}:{zy},"
             if Path(path).suffix.lower() in IMG_EXTS:
-                # 정지 이미지: 첫 프레임을 (b-a)초 반복 + 비율 보존 레터박스, 오디오는 무음
+                # 정지 이미지: 첫 프레임을 (b-a)초 반복, 오디오는 무음.
+                # 캔버스와 방향이 다르면 영상과 동일하게 블러 확대 배경 + 원본 중앙
                 dur = round(max(0.1, b - a), 3)
                 tw, th = (out_w, out_h) if (src_portrait and not wide) else (1920, 1080)
-                lines.append(
-                    f"[{src}:v]loop=loop=-1:size=1:start=0,trim=0:{dur},setpts=PTS-STARTPTS,"
-                    f"fps=30,{tp}{zf}scale={tw}:{th}:force_original_aspect_ratio=decrease,"
-                    f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v{i}];")
+                ihead = (f"[{src}:v]loop=loop=-1:size=1:start=0,trim=0:{dur},"
+                         f"setpts=PTS-STARTPTS,fps=30,{tp}{zf}")
+                w0, h0 = display_dims(path)
+                if rot in (90, 270, -90):
+                    w0, h0 = h0, w0
+                if (w0 < h0) != (tw < th):
+                    lines.append(f"{ihead}split=2[bg{i}][fg{i}];")
+                    lines.append(f"[bg{i}]scale={tw}:{th}:force_original_aspect_ratio=increase,"
+                                 f"crop={tw}:{th},boxblur=24:2[bgb{i}];")
+                    lines.append(f"[fg{i}]scale=-2:{th}[fgs{i}];" if tw > th
+                                 else f"[fg{i}]scale={tw}:-2[fgs{i}];")
+                    lines.append(f"[bgb{i}][fgs{i}]overlay=(W-w)/2:(H-h)/2,setsar=1[v{i}];")
+                else:
+                    lines.append(f"{ihead}scale={tw}:{th}:force_original_aspect_ratio=decrease,"
+                                 f"pad={tw}:{th}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[v{i}];")
                 lines.append(f"anullsrc=r=44100:cl=stereo,atrim=0:{dur},asetpts=PTS-STARTPTS[a{i}];")
                 pairs.append(f"[v{i}][a{i}]")
                 continue
