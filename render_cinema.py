@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
@@ -249,6 +250,8 @@ def main() -> None:
         sfx = sp.get("sfx", [])
         narr_captions = sp.get("narr_captions", False)
         narr_warm = sp.get("narr_warm", True)
+        narr_gap = float(sp.get("narr_gap", 0.8))       # 나레이션 최소 틈(초)
+        narr_autofit = sp.get("narr_autofit", True)     # 합성 실측 길이로 겹침 자동 보정
         keywords = sp.get("keywords", [])
         exp_color = sp.get("exp_color", EXP_HL)
         caption_mode = sp.get("caption_mode", "chunk")  # "sentence" = 문장 통표시
@@ -292,6 +295,8 @@ def main() -> None:
         vocal_boost = None
         narr_captions = False
         narr_warm = True
+        narr_gap = 0.8
+        narr_autofit = True
         keywords = []
         exp_color = EXP_HL
         caption_mode = "chunk"
@@ -365,12 +370,37 @@ def main() -> None:
                     shutil.copy(cached, wav)
                     print(f"  나레이션 {ni + 1}: 캐시 재사용")
                 else:
-                    synth(text, wav, voice=voice_i, rate=rate, pitch=pitch)
+                    # Typecast/edge-tts 지연·타임아웃 대비 재시도 — 1회 실패로 렌더 전체가 죽지 않게
+                    for _try in range(1, 4):
+                        try:
+                            synth(text, wav, voice=voice_i, rate=rate, pitch=pitch)
+                            break
+                        except Exception as e:
+                            if _try == 3:
+                                raise RuntimeError(
+                                    f"나레이션 {ni + 1} 합성 3회 실패: {text[:20]}") from e
+                            print(f"  나레이션 {ni + 1}: 합성 실패({type(e).__name__}) — 재시도 {_try}/2")
+                            time.sleep(3 * _try)
                     if warm_i:
                         warm(wav, config.FFMPEG)
                     shutil.copy(wav, cached)
                     print(f"  나레이션 {ni + 1}: 새로 합성 (캐시 저장)")
             narr_files.append((at, wav, probe_dur(wav), vol))
+
+        # 실측 길이 기반 배치 보정: 대본의 at은 추정 발화 길이로 잡은 값이라, 실제 합성이
+        # 길면 다음 문장과 겹치거나 틈이 narr_gap 미만(급발진)이 된다. 그 경우 뒤 문장을
+        # 뒤로 민다 (at보다 앞당기지는 않음 — 장면 앵커 유지). narr_autofit:false로 끌 수 있다.
+        if narr_autofit:
+            prev_end = None
+            for i, (at, wavf, dur, vol) in enumerate(narr_files):
+                if wavf is None:  # 자막만 항목은 오디오 겹침이 없어 앵커 유지
+                    continue
+                new_at = at if prev_end is None else max(at, prev_end + narr_gap)
+                if new_at - at > 0.01:
+                    print(f"  나레이션 {i + 1}: {at:.2f}s → {new_at:.2f}s (+{new_at - at:.2f}s, 겹침 방지)")
+                    narr_files[i] = (new_at, wavf, dur, vol)
+                    narrs[i] = (new_at,) + tuple(narrs[i][1:])
+                prev_end = max(at, new_at) + dur
 
         # 나레이션 = 자막: 구 단위 분할 + Whisper 단어 타이밍 정렬 + 키워드 강조색
         # 자막 싱크(whisper)는 (문구|모드|음성wav)가 같으면 재사용 → 반복 미리보기/재렌더 시 whisper 생략
