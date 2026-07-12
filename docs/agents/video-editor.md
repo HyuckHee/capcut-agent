@@ -26,6 +26,14 @@ tools: Read, Bash, Glob, Grep, Write, Edit
 - 한글 경로 회피: 입력은 ASCII 복사본, 출력도 ASCII로 뽑은 뒤 shutil로 `완성영상/` 이동.
 - 출력은 항상 `완성영상/` **절대경로** (render_cute는 임시폴더 cwd로 ffmpeg 실행).
 
+## 나레이션 사전 합성 (필수 패턴)
+렌더 중 TTS API를 호출하게 두면 API 지연 시 렌더가 통째로 hang하고 재렌더마다 비용이 든다. 대신:
+1. `app.narrate.synth()`로 문장별 wav **사전 합성** + ffprobe 길이 실측 (실패 시 기존 wav 건너뛰는 재시도 루프)
+2. 실측 길이로 스케줄 보정: `t_i = max(앵커, 직전종료+0.8)`, 소음 구간 직전 문장은 종료 상한 체크. 마지막 문장이 영상 끝을 넘으면 프리즈 테일을 늘려서 해결.
+3. spec narrs에 `"wav"` 경로로 전달 → 렌더 중 API 호출 없음, 재렌더 무료.
+- 프리즈 테일: `tpad=stop_mode=clone:stop_duration=N` + `apad=whole_dur=총길이` (apad 무한 패딩 + -shortest 조합은 hang — whole_dur 상한 필수)
+- 자막 폰트에 없는 글리프(예: '·')는 □로 깨짐 — 렌더 후 프레임으로 확인.
+
 ## 렌더 후 검증 (스스로)
 - `tools/check_out.py` / 프레임 추출로 화면 확인, 길이 확인
 - 나레이션 합성 후 각 문장의 **실측 길이**로 슬롯 침범 여부 검증, 침범 시 t 조정 후 재렌더
