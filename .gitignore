@@ -29,5 +29,21 @@ library/sfx/dog_*.wav
 library/sfx/car_*.wav
 library/sfx/fx_*.wav
 
+# 제3자 BGM — 영상 사용은 허용돼도 음원 파일 재배포는 별개 → 기본 제외(deny by default).
+# 공개 저장소에 올릴 수 있는 건 프로젝트 기본 CC0 3곡뿐. 분류 정보는 catalog.json/README.md로만 공유.
+# 제외 대상: 테일즈위버 OST(비영리 한정) + 유튜브 오디오 라이브러리 곡(재배포 불가)
+library/bgm/*.wav
+library/bgm/*.mp3
+!library/bgm/cute_musicbox.wav
+!library/bgm/pizzicato_play.wav
+!library/bgm/ukulele_bounce.wav
+
+# 라이선스 미확인 폰트 (재배포 가능 여부 확인 전까지 로컬 전용)
+library/fonts/Griun_*.ttf
+font/
+
+# macOS
+.DS_Store
+
 # 로컬 개발 도구 설정 (OS별 경로 상이)
 .claude/
