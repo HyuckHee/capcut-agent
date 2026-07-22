@@ -40,7 +40,6 @@ library/bgm/*.mp3
 
 # 라이선스 미확인 폰트 (재배포 가능 여부 확인 전까지 로컬 전용)
 library/fonts/Griun_*.ttf
-font/
 
 # macOS
 .DS_Store
