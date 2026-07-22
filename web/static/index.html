@@ -528,19 +528,88 @@ function tlStamp() {
   d.focus();
 }
 
+// ── AI 질문·답변: A(제안과 함께 온 후속 질문) + B(착수 전 해석 확인)
+const qaExtra = { draft: "", bubbles: "", sfx: "" };  // 답변 누적 → 이후 호출의 디렉션에 병합
+function dirWith(kind) {
+  const d = $("#direction").value.trim();
+  return (d + (qaExtra[kind] ? "\n\n" + qaExtra[kind] : "")).trim();
+}
+function qaBoxFor(anchorId) {  // 앵커 요소 바로 뒤에 질문 카드용 div를 (없으면) 만든다
+  const anchor = $(anchorId), id = anchorId.slice(1) + "Qa";
+  let box = document.getElementById(id);
+  if (!box) {
+    box = document.createElement("div");
+    box.id = id;
+    anchor.parentNode.insertBefore(box, anchor.nextSibling);
+  }
+  return box;
+}
+// A. 제안과 함께 온 질문 — 답하면 디렉션에 병합해 재실행 (무시해도 제안은 이미 반영돼 있음)
+function showQuestions(anchorId, kind, questions, rerun) {
+  const box = qaBoxFor(anchorId);
+  if (!questions || !questions.length) { box.innerHTML = ""; return; }
+  logEdit("AI 질문 (" + kind + ")", "답하면 더 정확한 제안으로 다시 만들 수 있어요", questions);
+  box.innerHTML = `<div style="padding:10px 12px; border:1px solid var(--acc); border-radius:8px; margin-top:8px">
+    <b style="font-size:12px">❓ AI가 확신이 없어 물어봐요 — 답하면 더 정확해집니다 (무시해도 됨)</b>
+    ${questions.map((q, i) => `<div class="hint" style="margin-top:6px">${esc(q)}</div>
+      <input id="${box.id}_a${i}" style="width:100%; margin-top:2px" placeholder="한 줄 답변 (비우면 AI 추측 유지)">`).join("")}
+    <button class="mini" style="margin-top:8px" id="${box.id}_go">✦ 답변 반영해 다시 제안</button></div>`;
+  document.getElementById(box.id + "_go").onclick = () => {
+    const rows = questions.map((q, i) => ({ q, a: document.getElementById(`${box.id}_a${i}`).value.trim() }))
+      .filter(r => r.a).map(r => `Q: ${r.q} → A: ${r.a}`);
+    if (!rows.length) return alert("답변을 입력하세요 — 무시하려면 그냥 두면 됩니다 (제안은 이미 적용돼 있어요)");
+    qaExtra[kind] = (qaExtra[kind] ? qaExtra[kind] + "\n" : "[편집자 답변 — 반드시 반영]\n") + rows.join("\n");
+    box.innerHTML = "";
+    rerun();
+  };
+}
+// B. 착수 전 확인 — 해석이 갈리면 실행 전에 선택지로 물어본다
+function renderConfirm(anchorId, questions, proceed) {
+  const box = qaBoxFor(anchorId);
+  logEdit("착수 전 확인", "해석이 갈려 실행 전에 물어봅니다", questions.map(q => q.q));
+  box.innerHTML = `<div style="padding:10px 12px; border:1px solid #fb923c; border-radius:8px; margin-top:8px; background:rgba(234,88,12,.08)">
+    <b style="font-size:12px; color:#fb923c">⏸ 착수 전 확인 — 해석이 갈리는 지점이 있어요 (아직 실행 안 함)</b>
+    ${questions.map((q, i) => `<div style="margin-top:8px"><div class="hint"><b>${esc(q.q)}</b></div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-top:4px">
+        ${(q.options || []).map(o => `<button class="mini" data-qi="${i}">${esc(o)}</button>`).join("")}
+      </div>
+      <input id="${box.id}_c${i}" style="width:100%; margin-top:4px" placeholder="선택지 클릭 또는 직접 입력"></div>`).join("")}
+    <div style="display:flex; gap:6px; margin-top:10px">
+      <button class="mini" id="${box.id}_go" style="border-color:var(--acc); color:var(--acc)">✦ 이 답으로 진행</button>
+      <button class="mini" id="${box.id}_skip">질문 없이 AI 판단으로 진행</button>
+    </div></div>`;
+  box.querySelectorAll("[data-qi]").forEach(btn => btn.onclick = () => {
+    document.getElementById(`${box.id}_c${btn.dataset.qi}`).value = btn.textContent;
+  });
+  document.getElementById(box.id + "_go").onclick = () => {
+    const ans = questions.map((q, i) => ({ q: q.q, a: document.getElementById(`${box.id}_c${i}`).value.trim() }))
+      .filter(a => a.a);
+    if (!ans.length) return alert("답을 고르거나 입력하세요 — 그냥 진행하려면 아래 버튼을 누르세요");
+    box.innerHTML = "";
+    proceed(ans, false);
+  };
+  document.getElementById(box.id + "_skip").onclick = () => { box.innerHTML = ""; proceed([], true); };
+}
+
 // ── 디렉션을 편집(세그먼트)에 적용: 슬로우·리플레이·확대 등 컷 자체를 수정
-async function aiEdit() {
+async function aiEdit(answers, skip) {
   if (!segs.length) return alert("세그먼트가 없습니다 — ② 컷 편집에서 구간을 먼저 잡으세요");
   if (!$("#direction").value.trim()) return alert("편집 디렉션을 먼저 적으세요");
   const btn = $("#aeBtn");
-  btn.disabled = true; btn.textContent = "✦ 편집본 보고 디렉션 반영 중… (2~5분)";
+  btn.disabled = true;
+  btn.textContent = answers || skip ? "✦ 편집본 보고 디렉션 반영 중… (2~5분)" : "✦ 디렉션 해석 확인 중… (~1분)";
   try {
     const res = await (await fetch("/api/aiedit", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile: preset, direction: $("#direction").value.trim(),
+        answers: answers || [], skip_confirm: !!skip,
         segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd || 1, zoom: s.zoom || 1 })) }),
     })).json();
     if (res.error) throw res.error;
+    if (res.needs_confirm) {  // 착수 전 확인 — 답을 받아 같은 함수로 재진입
+      renderConfirm("#aeInfo", res.questions, (ans, sk) => aiEdit(ans, sk));
+      return;
+    }
     if (!res.segments || !res.segments.length) throw "수정안을 만들지 못했습니다";
     segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: s.spd || 1,
       zoom: s.zoom || 1, zcx: s.zcx, zcy: s.zcy, tags: "", why: s.why || "" }));
@@ -610,17 +679,24 @@ async function autoDraft() {
 }
 
 // ── AI 편집 추천: 원본 전체 + 줄거리 → 스토리에 맞는 편집 구간 (Claude)
-async function aiRecommend() {
+async function aiRecommend(answers, skip) {
   if (!clips.length) return alert("먼저 영상을 업로드하세요");
   if (!preset) return alert("프리셋을 먼저 선택하세요");
   const btn = $("#arBtn");
-  btn.disabled = true; btn.textContent = "🎬 원본 보고 편집 구간 찾는 중… (2~5분)";
+  btn.disabled = true;
+  btn.textContent = answers || skip ? "🎬 원본 보고 편집 구간 찾는 중… (2~5분)" : "🎬 요청 해석 확인 중… (~1분)";
   try {
     const res = await (await fetch("/api/airecommend", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(), clips: clips.map(c => c.id) }),
+      body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(), clips: clips.map(c => c.id),
+        answers: answers || [], skip_confirm: !!skip }),
     })).json();
     if (res.error) throw res.error;
+    if (res.needs_confirm) {  // 착수 전 확인 — 답을 받아 같은 함수로 재진입
+      $("#arInfo").style.display = "block"; $("#arInfo").innerHTML = "";
+      renderConfirm("#arInfo", res.questions, (ans, sk) => aiRecommend(ans, sk));
+      return;
+    }
     if (!res.segments || !res.segments.length) throw "추천 구간을 찾지 못했습니다";
     segs = res.segments.map(s => ({ clip: s.clip_id, a: s.a, b: s.b, spd: s.spd || 1, tags: s.role || "", why: s.why || "" }));
     renderSegs();
@@ -649,7 +725,7 @@ async function aiDraft() {
     const res = await (await fetch("/api/aidraft", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
-        direction: $("#direction").value.trim(),
+        direction: dirWith("draft"),
         movie: [$("#logoText").value.trim(), $("#logoSub").value.trim()].filter(Boolean).join(" · "),  // 영화 제목 → Claude의 작품 지식 활용
         subs: subsRows.filter(s => s.text.trim()).map(s => ({ a: s.a, b: s.b, text: s.text.trim() })),  // 대사 구간 회피용
         segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd, tags: s.tags || "" })) }),
@@ -661,6 +737,7 @@ async function aiDraft() {
     if (res.title) $("#title").value = res.title;
     if (res.out_name && !$("#outName").value) $("#outName").value = res.out_name;
     showAiInfo(res);
+    showQuestions("#aiInfo", "draft", res.questions, aiDraft);
     return true;
   } catch (e) {
     alert("AI 초안 실패: " + e);
@@ -722,7 +799,7 @@ async function loadOpts() {
     vs.map(v => `<option value="${v.id}">${v.name}</option>`).join("");
   bgmList = await (await fetch("/api/bgms")).json();
   $("#bgm").innerHTML = '<option value="">없음</option>' +
-    bgmList.map(b => `<option value="${b.path}">${b.name}</option>`).join("");
+    bgmList.map(b => `<option value="${b.path}">${b.label || b.name}</option>`).join("");
   applyPresetDefaults();  // 옵션 로딩 전에 프리셋을 눌렀어도 반영
 }
 loadOpts();
@@ -1025,7 +1102,7 @@ async function aiSfx() {
     const res = await (await fetch("/api/aisfx", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
-        direction: $("#direction").value.trim(),
+        direction: dirWith("sfx"),
         segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd })) }),
     })).json();
     if (res.error) throw res.error;
@@ -1034,6 +1111,7 @@ async function aiSfx() {
     logEdit("AI 효과음", `${res.sfx.length}개 배치`, res.sfx.map(s => `${s.at}s ${s.name} — ${s.why || ""}`));
     renderSfx();
     $("#sfxHint").textContent = `✦ ${sfxRows.length}개 배치됨 — ▶로 확인하고 시각·음량 조정하세요`;
+    showQuestions("#sfxHint", "sfx", res.questions, aiSfx);
   } catch (e) {
     alert("AI 효과음 실패: " + e);
   } finally {
@@ -1051,8 +1129,9 @@ async function aiBubbles() {
     const res = await (await fetch("/api/aibubbles", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ profile: preset, synopsis: $("#synopsis").value.trim(),
-        direction: $("#direction").value.trim(),
-        segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd })) }),
+        direction: dirWith("bubbles"),
+        segments: segs.map(s => ({ clip_id: s.clip, a: s.a, b: s.b, spd: s.spd,
+          rot: s.rot || 0, zoom: s.zoom || 1, zcx: s.zcx, zcy: s.zcy })) }),
     })).json();
     if (res.error) throw res.error;
     if (!res.bubbles || !res.bubbles.length) throw "말풍선 후보를 찾지 못했습니다";
@@ -1060,6 +1139,7 @@ async function aiBubbles() {
     logEdit("AI 말풍선", `${res.bubbles.length}개 배치`, res.bubbles.map(b => `${b.a}~${b.b}s "${b.text}"`));
     renderBubbles();
     $("#bubHint").textContent = `✦ ${bubbles.length}개 제안됨 — 행의 🎯로 위치, 텍스트를 자유롭게 수정하세요 (수정본이 다음 제안 학습에 반영)`;
+    showQuestions("#bubHint", "bubbles", res.questions, aiBubbles);
   } catch (e) {
     alert("AI 말풍선 실패: " + e);
   } finally {

@@ -125,8 +125,15 @@ async def voices():
 
 @app.get("/api/bgms")
 async def bgms():
-    return [{"name": f.stem, "path": str(f)}
-            for f in sorted((ROOT / "library" / "bgm").glob("*.wav"))]
+    bgm_dir = ROOT / "library" / "bgm"
+    try:  # 곡별 무드 카탈로그 (없어도 동작)
+        catalog = json.loads((bgm_dir / "catalog.json").read_text(encoding="utf-8"))
+    except Exception:
+        catalog = {}
+    return [{"name": f.stem, "path": str(f),
+             "label": f.stem + (" — " + catalog[f.stem]["tag"]
+                                if catalog.get(f.stem, {}).get("tag") else "")}
+            for f in sorted(bgm_dir.glob("*.wav"))]
 
 
 SFX_DIR = ROOT / "library" / "sfx"
@@ -224,7 +231,7 @@ async def autodraft(payload: dict):
 
 
 from app.ai_draft import (ai_draft, ai_bubbles, ai_sfx, recommend_edit, find_claude,  # noqa: E402
-                          log_bubbles, log_narrs, log_sfx)
+                          log_bubbles, log_narrs, log_sfx, clarify_check, merge_answers)
 
 
 @app.post("/api/aisfx")
@@ -268,7 +275,10 @@ async def aibubbles(payload: dict):
         c = CLIPS.get(s["clip_id"])
         if not c:
             return JSONResponse({"error": f"클립 없음: {s['clip_id']}"}, status_code=400)
-        segments.append({"path": c["path"], "a": s["a"], "b": s["b"], "spd": s.get("spd", 1)})
+        # rot/zoom/zcx/zcy는 좌표 변환용 — 렌더와 같은 변환을 거쳐야 말풍선 위치가 맞는다
+        segments.append({"path": c["path"], "a": s["a"], "b": s["b"], "spd": s.get("spd", 1),
+                         "rot": s.get("rot", 0), "zoom": s.get("zoom", 1),
+                         "zcx": s.get("zcx"), "zcy": s.get("zcy")})
     if not segments:
         return JSONResponse({"error": "세그먼트가 없습니다"}, status_code=400)
     if not find_claude():
@@ -308,6 +318,25 @@ async def aiedit(payload: dict):
         return JSONResponse({"error": "Claude Code CLI(claude)를 찾을 수 없습니다"}, status_code=500)
     preset = payload.get("profile", "wanghee")
     loop = asyncio.get_event_loop()
+    # 착수 전 해석 확인 (B): 디렉션이 여러 갈래로 읽히면 실행 대신 질문을 돌려준다
+    answers = payload.get("answers") or []
+    if answers:
+        direction = merge_answers(direction, answers)
+    elif not payload.get("skip_confirm"):
+        seg_desc, cursor = [], 0.0
+        for s in segments:
+            spd = float(s.get("spd") or 1)
+            d = (float(s["b"]) - float(s["a"])) / spd
+            seg_desc.append(f"- 완성 {cursor:.1f}~{cursor + d:.1f}초 = 원본 {s['a']:.1f}~{s['b']:.1f}초"
+                            + (f" (spd {spd})" if spd != 1 else ""))
+            cursor += d
+        ctx = ("[현재 편집본 세그먼트]\n" + "\n".join(seg_desc)
+               + f"\n총 {cursor:.1f}초\n\n[편집 디렉션 — 이걸 실행할 예정]\n" + direction)
+        qs = await loop.run_in_executor(
+            None, clarify_check,
+            "현재 편집본 세그먼트에 편집자 디렉션(슬로우·리플레이·확대·분할 등)을 적용해 컷을 수정하는 작업", ctx)
+        if qs:
+            return {"needs_confirm": True, "questions": qs}
     try:
         result = await loop.run_in_executor(None, ai_edit_apply, segments, style, direction, preset)
     except Exception as e:
@@ -357,6 +386,21 @@ async def airecommend(payload: dict):
     synopsis = (payload.get("synopsis") or "").strip()
     direction = (payload.get("direction") or "").strip()
     loop = asyncio.get_event_loop()
+    # 착수 전 해석 확인 (B): 갈림길 질문이 있으면 실행 대신 질문을 돌려준다
+    answers = payload.get("answers") or []
+    if answers:
+        direction = merge_answers(direction, answers)
+    elif not payload.get("skip_confirm"):
+        ctx = "\n".join(filter(None, [
+            f"- 원본 클립 {len(clips)}개, 길이: " + ", ".join(f"{c['duration']:.0f}초" for c in clips),
+            f"- 목표: {target_len:.0f}초 내외 쇼츠 (최대 {max_len:.0f}초)",
+            f"- 줄거리: {synopsis}" if synopsis else "- 줄거리 없음 (화면만 보고 구성)",
+            f"- 편집 디렉션: {direction}" if direction else "",
+        ]))
+        qs = await loop.run_in_executor(
+            None, clarify_check, "원본 클립 전체를 훑어 쇼츠에 넣을 편집 구간(세그먼트)을 고르는 작업", ctx)
+        if qs:
+            return {"needs_confirm": True, "questions": qs}
     try:
         result = await loop.run_in_executor(
             None, recommend_edit, clips, synopsis, style, target_len, max_len, direction)

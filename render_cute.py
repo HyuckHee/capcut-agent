@@ -34,7 +34,10 @@ def build_filter(pieces, captions, sfx_placements, total, tmp: Path,
                  vertical: bool = False, subject_x: float = 0.35,
                  src_portrait: bool = False,
                  ducks: list[tuple[float, float, float]] | None = None,
-                 boosts: list[tuple[float, float, float]] | None = None) -> tuple[str, list[str]]:
+                 boosts: list[tuple[float, float, float]] | None = None,
+                 font: Path | None = None,
+                 bgm_name: str | None = None,
+                 caption_size: int | None = None) -> tuple[str, list[str]]:
     """filter_complex 스크립트와 추가 입력 파일 목록을 만든다."""
     lines = []
     extra_inputs: list[str] = []
@@ -52,6 +55,8 @@ def build_filter(pieces, captions, sfx_placements, total, tmp: Path,
         out_w, out_h = OUT_W, OUT_H
         base = ""
         font_size, cap_y = CAPTION_FONT_SIZE, CAPTION_Y_CENTER
+    if caption_size:  # 자막 크기 수동 지정
+        font_size = caption_size
 
     # ── 비디오/오디오 조각
     zoom_w = round(out_w * HIGHLIGHT_SCALE / 2) * 2
@@ -94,7 +99,7 @@ def build_filter(pieces, captions, sfx_placements, total, tmp: Path,
 
     # ── 자막 (ffmpeg는 cwd=tmp로 실행 — 필터 안 경로에 드라이브 콜론이 없도록 상대경로 사용)
     import shutil
-    shutil.copy(FONT_SOURCE, tmp / "font.ttf")
+    shutil.copy(font if font else FONT_SOURCE, tmp / "font.ttf")
     vin = "vc"
     for i, (c_start, c_end, text) in enumerate(captions):
         tl_a = _to_timeline(c_start, pieces, clamp=True)
@@ -111,7 +116,13 @@ def build_filter(pieces, captions, sfx_placements, total, tmp: Path,
 
     # ── 오디오 믹스 (원본 + BGM + 효과음)
     library = ensure_library()
-    bgm_files = sorted((library / "bgm").glob("*.wav"))
+    if bgm_name:  # 곡 지정 (library/bgm의 파일명, 확장자 생략 가능)
+        bgm_pick = library / "bgm" / (bgm_name if bgm_name.endswith(".wav") else f"{bgm_name}.wav")
+        if not bgm_pick.exists():
+            sys.exit(f"BGM 파일 없음: {bgm_pick}")
+        bgm_files = [bgm_pick]
+    else:
+        bgm_files = sorted((library / "bgm").glob("*.wav"))
     mix_ins = ["[ac]"]
     idx = n_video_inputs_offset
     if bgm_files:
@@ -158,6 +169,12 @@ def main() -> None:
                         help="BGM 덕킹 구간. 예: --duck 7.8-16.5:0.3 (반복 가능)")
     parser.add_argument("--boost", action="append", default=[], metavar="시작-끝:배율",
                         help="원본 소리 증폭 구간. 예: --boost 9.0-10.0:2.0 (반복 가능)")
+    parser.add_argument("--font", default=None, metavar="TTF경로",
+                        help="자막 폰트 파일 (기본: 맑은고딕/Pretendard-ExtraBold)")
+    parser.add_argument("--bgm", default=None, metavar="이름",
+                        help="library/bgm의 곡 지정 (기본: 정렬 첫 곡)")
+    parser.add_argument("--caption-size", type=int, default=None,
+                        help="자막 fontsize (기본: 쇼츠 44 / 가로 기본값)")
     args = parser.parse_args()
 
     cut_ranges = [tuple(map(float, s.split("-"))) for s in args.cut]
@@ -208,7 +225,9 @@ def main() -> None:
         filter_script, extra = build_filter(
             pieces, captions, placements, total, tmp, n_video_inputs_offset=1,
             freeze=args.freeze, vertical=args.vertical, subject_x=args.subject_x,
-            src_portrait=info.height > info.width, ducks=ducks, boosts=boosts)
+            src_portrait=info.height > info.width, ducks=ducks, boosts=boosts,
+            font=Path(args.font).resolve() if args.font else None, bgm_name=args.bgm,
+            caption_size=args.caption_size)
         script_path = tmp / "filter.txt"
         script_path.write_text(filter_script, encoding="utf-8")
 

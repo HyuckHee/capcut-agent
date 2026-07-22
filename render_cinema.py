@@ -254,6 +254,7 @@ def main() -> None:
         narr_autofit = sp.get("narr_autofit", True)     # 합성 실측 길이로 겹침 자동 보정
         keywords = sp.get("keywords", [])
         exp_color = sp.get("exp_color", EXP_HL)
+        exp_font = sp.get("exp_font")    # 나레이션/설명 자막 전용 폰트 ttf 경로 (기본 주아체)
         caption_mode = sp.get("caption_mode", "chunk")  # "sentence" = 문장 통표시
         logo = sp.get("logo")            # {"text": "올빼미", "sub": "The Night Owl · 2022"}
         labels = sp.get("labels", [])    # [[t0, t1, "(맹인 침술사)", x, y], ...]
@@ -299,6 +300,7 @@ def main() -> None:
         narr_autofit = True
         keywords = []
         exp_color = EXP_HL
+        exp_font = None
         caption_mode = "chunk"
         logo = None
         labels = []
@@ -332,6 +334,7 @@ def main() -> None:
         exp_size = sp.get("exp_size", exp_size)
         exp_y = sp.get("exp_y", exp_y)
         title_y = sp.get("title_y", title_y)  # 수동 지정 시 자동 배치보다 우선
+        title_size = sp.get("title_size", title_size)
 
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -340,6 +343,8 @@ def main() -> None:
         shutil.copy(FONT_EXP, tmp / "fontx.otf")   # Pretendard ExtraBold (제목)
         shutil.copy(FONT_NARR, tmp / "fontn.ttf")   # 궁서 (영화 로고)
         shutil.copy(FONT_ROUND, tmp / "fontr.ttf")  # 주아 (나레이션 자막 — 대사와 폰트 차별화)
+        if exp_font:
+            shutil.copy(exp_font, tmp / "fonte.ttf")  # spec 지정 자막 전용 폰트
 
         # ── 나레이션 TTS 생성 + 길이 측정
         # 캐시: 같은 (음성|속도|피치|후처리|문구)면 저장본 재사용 → API 크레딧 절약.
@@ -576,8 +581,11 @@ def main() -> None:
         elif title_lines and not wide and src_portrait and not manual_ty:
             title_y = 140  # 풀스크린은 최상단이 그림이 제일 예쁨 (피사체 안 가림)
         # 풀스크린(세로 원본)은 영상 위에 제목이 얹히므로 반투명 검은 박스로 가독성 확보
-        title_box = (":box=1:boxcolor=black@0.5:boxborderw=16"
-                     if (src_portrait and not wide) else "")
+        # spec "title_box": false 로 끌 수 있음 (밝은 장면 등 박스가 눈에 걸릴 때)
+        want_title_box = src_portrait and not wide
+        if args.spec and "title_box" in sp:
+            want_title_box = bool(sp["title_box"])
+        title_box = ":box=1:boxcolor=black@0.5:boxborderw=16" if want_title_box else ""
         if title_box:
             # 줄 간격을 박스 높이(글자+패딩 16×2)에 정확히 맞춰 박스끼리 겹침(진해짐)도 틈도 없게
             title_gap = max(title_gap, title_size + 32)
@@ -622,12 +630,23 @@ def main() -> None:
                 out_text, fsize = text, fit
             else:
                 out_text, fsize = wrap(text, max(8, int(1000 / exp_size))), exp_size
-            (tmp / f"exp{ei}.txt").write_text(out_text, encoding="utf-8")
-            lines.append(
-                f"[{vin}]drawtext=fontfile=fontr.ttf:textfile=exp{ei}.txt"
-                f":fontsize={fsize}:fontcolor={color}:borderw=6:bordercolor=black"
-                f":line_spacing=0:x=(w-text_w)/2:y={exp_y}"
-                f":enable='between(t,{t0:.2f},{t1:.2f})'[vexp{ei}];")
+            if _has_emoji(out_text):
+                # 이모지 포함 나레이션 자막: drawtext는 이모지 글리프가 없어 깨짐 → PNG 오버레이
+                _src_font = exp_font if exp_font else (tmp / "fontr.ttf")
+                render_text_png(out_text.replace("\n", " "), tmp / f"exp{ei}.png",
+                                font_path=_src_font, fontsize=fsize, stroke=6,
+                                color=str(color).replace("0x", "#"))
+                lines.append(f"movie=exp{ei}.png[eimg{ei}];")
+                lines.append(f"[{vin}][eimg{ei}]overlay=(W-w)/2:{exp_y}"
+                             f":enable='between(t,{t0:.2f},{t1:.2f})'[vexp{ei}];")
+            else:
+                (tmp / f"exp{ei}.txt").write_text(out_text, encoding="utf-8")
+                exp_ff = "fonte.ttf" if exp_font else "fontr.ttf"
+                lines.append(
+                    f"[{vin}]drawtext=fontfile={exp_ff}:textfile=exp{ei}.txt"
+                    f":fontsize={fsize}:fontcolor={color}:borderw=6:bordercolor=black"
+                    f":line_spacing=0:x=(w-text_w)/2:y={exp_y}"
+                    f":enable='between(t,{t0:.2f},{t1:.2f})'[vexp{ei}];")
             vin = f"vexp{ei}"
 
         # 영화 로고 타이틀 (궁서) — 세로: 최하단 중앙 + 부제 / 가로: 우상단 코너

@@ -35,7 +35,8 @@ def render_bubble(text: str, out_path: str | Path, fontsize: int = 60,
 
 
 def render_text_png(text: str, out_path: str | Path, font_path: str | Path | None = None,
-                    fontsize: int = 60, stroke: int = 7, box: bool = False) -> tuple[int, int]:
+                    fontsize: int = 60, stroke: int = 7, box: bool = False,
+                    color: str = "white") -> tuple[int, int]:
     """이모지 섞인 텍스트 한 줄을 투명 PNG로 — drawtext가 못 그리는 이모지용 범용 렌더.
 
     box=True면 반투명 검은 박스(풀스크린 제목 가독성용)를 깔아준다. (너비, 높이) 반환.
@@ -72,7 +73,7 @@ def render_text_png(text: str, out_path: str | Path, font_path: str | Path | Non
         if e:
             x += _draw_emoji(Image, ImageDraw, img, s, emj, emj_scale, x, base)
         else:
-            d.text((x, base), s, font=jua, fill="white", anchor="ls",
+            d.text((x, base), s, font=jua, fill=color, anchor="ls",
                    stroke_width=stroke, stroke_fill="black")
             x += d.textlength(s, font=jua)
     img.save(out_path)

@@ -45,8 +45,14 @@ def find_claude() -> str | None:
 import math
 
 FONT_SRC = ROOT / "library" / "fonts" / "Pretendard-ExtraBold.otf"
-TARGET_FRAMES = 28     # 완성 영상 전체에서 뽑을 대략적 프레임 수 (촘촘히 = 영상을 실제로 봄)
+TARGET_FRAMES = 56     # 완성 영상 전체에서 뽑을 대략적 프레임 수 (촘촘히 = 영상을 실제로 봄)
 TILES_PER_IMG = 12     # 몽타주 한 장당 칸 수 (4×3)
+TILE = 480             # 몽타주 칸 크기(px) — 표정·꼬리 같은 세부가 보이는 최소선
+
+# 2패스 관찰: 코스 관찰에서 고른 결정적 순간 주변만 촘촘히 재샘플
+DENSE_SPAN = 1.5       # 핵심 순간 앞뒤로 살필 범위(초)
+DENSE_STEP = 0.3       # 재샘플 간격(초)
+DENSE_MAX_PTS = 36     # 재샘플 프레임 상한 (비용 방어)
 
 
 def _sample_points(segments: list[dict], interval: float) -> list[tuple[float, str, float]]:
@@ -76,9 +82,9 @@ def _render_montages(points: list[tuple], workdir: Path, prefix: str) -> list[di
     if not (workdir / "font.otf").exists():
         shutil.copy(FONT_SRC, workdir / "font.otf")  # drawtext는 상대 폰트경로 필요 (윈도 C:\ 이스케이프 회피)
     for k, (lab, src, st) in enumerate(points):
-        vf = ("scale=360:360:force_original_aspect_ratio=decrease,"
-              "pad=360:360:(ow-iw)/2:(oh-ih)/2:color=black,"
-              f"drawtext=fontfile=font.otf:text='{lab:.1f}s':x=8:y=6:fontsize=30:"
+        vf = (f"scale={TILE}:{TILE}:force_original_aspect_ratio=decrease,"
+              f"pad={TILE}:{TILE}:(ow-iw)/2:(oh-ih)/2:color=black,"
+              f"drawtext=fontfile=font.otf:text='{lab:.1f}s':x=8:y=6:fontsize=40:"
               "fontcolor=yellow:box=1:boxcolor=black@0.6:boxborderw=5")
         subprocess.run(
             [config.FFMPEG, "-y", "-v", "error", "-ss", f"{st:.2f}", "-i", src,
@@ -108,17 +114,17 @@ def build_montages(segments: list[dict], workdir: Path) -> tuple[list[dict], flo
     """완성(편집) 영상을 완성영상 기준 시각 몽타주로. (montages, 총길이)."""
     workdir.mkdir(parents=True, exist_ok=True)
     total = sum((s["b"] - s["a"]) / (s.get("spd") or 1) for s in segments)
-    interval = max(1.0, total / TARGET_FRAMES)
+    interval = max(0.5, total / TARGET_FRAMES)
     pts = _sample_points(segments, interval)
     return _render_montages(pts, workdir, ""), round(total, 1)
 
 
 def build_source_montages(clip: dict, workdir: Path, prefix: str,
-                          target_frames: int = 44) -> list[dict]:
+                          target_frames: int = 56) -> list[dict]:
     """원본 클립 '전체'를 원본 기준 시각 몽타주로. clip={path, duration}."""
     workdir.mkdir(parents=True, exist_ok=True)
     dur = float(clip["duration"])
-    interval = max(0.8, dur / target_frames)
+    interval = max(0.5, dur / target_frames)
     pts, t = [], 0.0
     while t < dur - 1e-6:
         pts.append((round(t, 1), clip["path"], round(t, 2)))
@@ -154,10 +160,77 @@ def observe_prompt(montages: list[dict], synopsis: str, movie: str = "") -> str:
         check_field = ', "synopsis_check": {"match": true, "note": "일치/불일치 근거 한두 문장"}'
     lines += [
         "",
+        "관찰과 별도로, 행동·상황이 가장 크게 바뀌는 '결정적 순간' 시각을 3~6개 골라라",
+        "(예: 물기 시작, 고개 돌림, 달리기 시작 — 이 순간들은 이후 더 촘촘히 재확인한다).",
+        "",
         "이미지를 모두 확인한 뒤, 다른 말 없이 아래 JSON만 출력해라:",
-        '{"observations": [{"t": 2.0, "see": "그 시각에 화면에 보이는 것"}]' + check_field + "}",
+        '{"observations": [{"t": 2.0, "see": "그 시각에 화면에 보이는 것"}],'
+        ' "key_moments": [12.5, 24.0]' + check_field + "}",
     ]
     return "\n".join(lines)
+
+
+def _dense_points(segments: list[dict], moments: list[float],
+                  total: float) -> list[tuple[float, str, float]]:
+    """결정적 순간 주변을 DENSE_STEP 간격으로 재샘플한 (출력시각, 소스경로, 소스시각) 목록."""
+    pts, seen = [], set()
+    for m in moments:
+        t = max(0.0, float(m) - DENSE_SPAN)
+        end = min(total - 0.05, float(m) + DENSE_SPAN)
+        while t <= end:
+            key = round(t, 1)
+            if key not in seen:
+                seen.add(key)
+                seg, st = _out_to_src(segments, t)
+                pts.append((key, seg["path"], round(st, 2)))
+            t += DENSE_STEP
+    pts.sort(key=lambda p: p[0])
+    return pts[:DENSE_MAX_PTS]
+
+
+def refine_prompt(montages: list[dict], observations: list[dict]) -> str:
+    """1.5단계: 결정적 순간 주변 촘촘한 몽타주로 관찰 로그를 세부 보강."""
+    obs_text = "\n".join(f"- {o.get('t')}s: {o.get('see', '')}" for o in observations)
+    lines = [
+        "앞서 성긴 간격으로 만든 관찰 로그가 아래에 있다. 이번 몽타주는 결정적 순간 주변만",
+        f"{DENSE_STEP}초 간격으로 다시 뽑은 것이다. Read 도구로 전부 확인해라.",
+        "각 칸 좌상단 노란 숫자는 완성 영상 기준 시각(초)이다.",
+        "",
+        "[세부 몽타주]",
+    ]
+    for m in montages:
+        lines.append(f"- {m['name']} (칸별 시각: {', '.join(str(s) for s in m['stamps'])}초)")
+    lines += [
+        "",
+        "[기존 관찰 로그]",
+        obs_text,
+        "",
+        "[임무] 기존 로그를 유지하되, 세부 몽타주에서 확인한 내용으로 보강해라:",
+        "- 행동의 시작·정점·끝이 정확히 몇 초인지",
+        "- 성긴 관찰에서 놓친 세부 (표정, 시선 방향, 몸 자세, 입에 문 물체 등)",
+        "- 기존 로그가 화면과 어긋나면 고쳐라. 여전히 추측·상상은 금지.",
+        "",
+        "합쳐진 전체 관찰 로그를, 다른 말 없이 아래 JSON만으로 출력해라:",
+        '{"observations": [{"t": 2.0, "see": "그 시각에 화면에 보이는 것"}]}',
+    ]
+    return "\n".join(lines)
+
+
+def _question_lines(what: str) -> list[str]:
+    """A. 비차단 질문 — 갈림길에서만 questions 필드에 담게 하는 공용 블록."""
+    return [
+        "",
+        "[질문 — 갈림길에서만]",
+        f"화면·맥락 해석이 갈려서 {what} 내용이 실제로 달라지는 지점이 있으면 questions에 1~2개만 담아라",
+        '(예: "6초에 물고 있는 게 장난감인가요, 간식인가요?"). 편집자가 한 줄로 답할 수 있게 구체적으로.',
+        "확신이 서면 빈 배열 []로 두고 최선의 추측으로 진행해라 — 사소한 취향·디테일은 질문하지 말 것.",
+        "대부분의 경우 질문 0개가 정상이다.",
+    ]
+
+
+def _pick_questions(data: dict) -> list[str]:
+    return [str(q).strip() for q in data.get("questions", [])
+            if str(q).strip()][:2]
 
 
 def _direction_block(direction: str) -> list[str]:
@@ -234,9 +307,16 @@ def narrate_prompt(observations: list[dict], style: str, synopsis: str, total: f
         "[나레이션 규칙]",
         "- 문장당 2~3초 분량의 짧은 한 문장. 나레이션 사이 최소 3초 간격.",
         f"- at은 0.5 ~ {max(0.5, total - 2):.1f}초 범위, 관찰된 시각 근처에 배치.",
+        "- 구독·좋아요·채널 방문 유도 문구(CTA)는 엔딩 포함 전면 금지. 예시에 있어도 따라 하지 마라.",
+        "- 장면을 하나하나 중계하지 마라('어? 저기 인형도 있네!' 식 나열 금지).",
+        "  영상 전체를 관통하는 한 가지 이야기(궁금증 → 전개 → 해소)로 문장들이 이어져야 한다.",
+    ]
+    lines += _question_lines("나레이션")
+    lines += [
         "",
         "아래 JSON만 출력해라:",
-        '{"title": "윗줄|아랫줄", "out_name": "출력파일명", "narrs": [{"at": 0.5, "text": "..."}]}',
+        '{"title": "윗줄|아랫줄", "out_name": "출력파일명", "narrs": [{"at": 0.5, "text": "..."}],'
+        ' "questions": []}',
     ]
     return "\n".join(lines)
 
@@ -280,6 +360,19 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "",
     obs = run_claude(observe_prompt(montages, synopsis, movie), workdir, MODEL_FAST)
     observations = obs.get("observations", [])
 
+    # 2패스: 결정적 순간 주변을 촘촘히 재관찰해 세부 보강 (실패해도 코스 관찰로 진행)
+    moments = [m for m in obs.get("key_moments", []) if isinstance(m, (int, float))][:6]
+    if moments:
+        try:
+            dense = _dense_points(segments, moments, total)
+            if dense:
+                dm = _render_montages(dense, workdir, "d_")
+                obs2 = run_claude(refine_prompt(dm, observations), workdir, MODEL_FAST)
+                if obs2.get("observations"):
+                    observations = obs2["observations"]
+        except Exception:
+            pass
+
     data = run_claude(narrate_prompt(observations, style, synopsis, total, dialogue,
                                      narr_examples(preset) if preset else None, movie,
                                      direction),
@@ -287,10 +380,12 @@ def ai_draft(segments: list[dict], style: str, synopsis: str = "",
     narrs = [{"at": float(n["at"]), "text": str(n["text"]).strip()}
              for n in data.get("narrs", []) if str(n.get("text", "")).strip()]
     narrs.sort(key=lambda n: n["at"])
+    narrs = verify_items(narrs, segments, workdir, total, kind="narr")
     log_narrs("ai", narrs, preset=preset)
 
     result = {"title": data.get("title", ""), "out_name": data.get("out_name", ""),
-              "narrs": narrs, "observations": observations}
+              "narrs": narrs, "observations": observations,
+              "questions": _pick_questions(data)}
     if synopsis and isinstance(obs.get("synopsis_check"), dict):
         result["synopsis_check"] = obs["synopsis_check"]
     return result
@@ -329,12 +424,21 @@ def _final_rows(path: Path, preset: str) -> list[dict]:
     return rows
 
 
+_CTA_RE = re.compile(r"구독|좋아요|채널로|채널에|풀영상|놀러\s*와")
+
+
 def _text_examples(path: Path, preset: str, limit: int, per_video: int = 3) -> list[dict]:
-    """최신 우선 + 같은 텍스트 중복 제거 + 영상당 상한(한 작품의 고유 단어 독점 방지)."""
+    """최신 우선 + 같은 텍스트 중복 제거 + 영상당 상한(한 작품의 고유 단어 독점 방지).
+
+    CTA 문장은 제외 — 2026-07-13 사용자 확정(구독·좋아요 유도 안 씀) 이전 영상의
+    확정본이 예시로 유입돼 금지된 톤을 학습시키는 것을 막는다.
+    """
     out, seen_text, per_vid = [], set(), {}
     for d in reversed(_final_rows(path, preset)):
         t, v = d.get("text", ""), d.get("video", "")
         if not t or t in seen_text or per_vid.get(v, 0) >= per_video:
+            continue
+        if _CTA_RE.search(t):
             continue
         seen_text.add(t)
         per_vid[v] = per_vid.get(v, 0) + 1
@@ -388,13 +492,22 @@ def sfx_usage(preset: str, top: int = 8) -> list[tuple[str, int]]:
 
 def bubble_prompt(montages: list[dict], style: str, synopsis: str,
                   total: float, examples: list[dict], preset: str = "wanghee",
-                  direction: str = "") -> str:
+                  direction: str = "",
+                  vocals: list[tuple[float, float, float]] | None = None) -> str:
     if preset == "cinema":
         role = "너는 영화·드라마 짤 쇼츠의 말풍선 자막 작가다."
-        kind = "- 인물의 속마음·리액션 짧은 자막(예: 환청인가..?, (당황)) 또는 상황 강조 텍스트"
+        kinds = ["- 인물의 속마음·리액션 짧은 자막(예: 환청인가..?, (당황)) 또는 상황 강조 텍스트"]
     else:
         role = "너는 반려동물 쇼츠의 말풍선 자막 작가다."
-        kind = "- 강아지 1인칭 짧은 대사(예: 내 인형이야!) 또는 효과음(예: 앙!, 킁킁, 쿨쿨)"
+        kinds = [
+            "- 잘 먹히는 유형 4가지 (이 채널 확정본에서 검증된 순서):",
+            "  ①괄호 상태어 — 감정·상태를 한 단어로: (부글), (무시), (집중), (허우적), (피곤)",
+            "  ②짧은 외침 — 감정이 터지는 순간: 앙!, 흐엑!, 내꺼야!, 들켰다!",
+            "  ③이름·호칭 외치기 (맥락에 이름이 있을 때)",
+            "  ④러닝 개그 — 같은 행동이 반복되면 같은 말풍선 반복 또는 (1트)→(2트) 카운트",
+            "- 설명조·평서문 대사(예: 쓰담 좋아, 눈 감겨, 더 만져줘)는 재미없어서 전부 버려진다.",
+            "  '상황을 설명'하지 말고 '감정이 터지는 순간의 속마음'을 써라.",
+        ]
     lines = [
         role + " 아래 몽타주 이미지를 Read 도구로 전부 확인해라.",
         "각 칸 좌상단의 노란 숫자는 완성 영상 기준 시각(초)이다.",
@@ -417,20 +530,72 @@ def bubble_prompt(montages: list[dict], style: str, synopsis: str,
         ]
         for e in examples:
             lines.append(f"- \"{e['text']}\"")
+    lines += _vocal_block(vocals or [], [
+        "- 강아지가 '말하는' 대사 말풍선은 가능하면 발성 구간에 at을 맞춰라 (소리와 대사가 싱크).",
+        "- 발성이 없는 시간대의 말풍선은 화면에 보이는 행동 기반(속마음·의성어)으로.",
+    ])
     lines += _direction_block(direction)
     lines += [
         "",
-        "[임무] 화면에서 실제로 보이는 행동에 맞춰 말풍선을 제안해라.",
-        kind,
-        "- 텍스트 2~8자. 이모지는 어울릴 때만 끝에 1개 (예: 저리 비켜😤)",
-        f"- 개수는 {max(2, int(total // 8))}~{max(3, int(total // 5))}개, 서로 3초 이상 간격",
+        "[임무] 화면에서 실제로 보이는 행동 중 '웃긴 순간'에만 말풍선을 달아라.",
+        *kinds,
+        "- 텍스트 2~8자. 느낌표는 최대 1개. 이모지는 어울릴 때만 끝에 1개 (예: 저리 비켜😤)",
+        f"- 개수는 {max(2, int(total // 8))}~{max(3, int(total // 5))}개가 기준이지만,"
+        " 어울리는 순간이 없으면 더 적게 — 억지 배치가 제일 나쁘다",
+        "- 서로 3초 이상 간격 (러닝 개그 반복은 예외)",
         "- at은 그 행동이 보이는 시각, dur은 1.5~2.5초",
         "- 보이지 않는 행동을 지어내지 말 것",
+    ]
+    lines += _question_lines("말풍선")
+    lines += [
         "",
         "아래 JSON만 출력해라:",
-        '{"bubbles": [{"at": 3.2, "dur": 1.8, "text": "앙!"}]}',
+        '{"bubbles": [{"at": 3.2, "dur": 1.8, "text": "앙!"}], "questions": []}',
     ]
     return "\n".join(lines)
+
+
+def _vocal_ranges_out(segments: list[dict], min_gap: float = 0.4) -> list[tuple[float, float, float]]:
+    """원본 발성 이벤트(0.2초 창)를 완성 타임라인 발성 구간 [(a, b, 강도)]로 병합·매핑.
+
+    말풍선·효과음 AI가 '실제 소리가 나는 시각'을 앵커로 쓰게 한다. 분석 실패 시 빈 목록.
+    """
+    from .audio_events import vocal_windows
+
+    WIN = 0.2
+    cache: dict[str, list] = {}
+    events, cursor = [], 0.0
+    for s in segments:
+        spd = s.get("spd") or 1
+        if s["path"] not in cache:
+            try:
+                cache[s["path"]] = vocal_windows(s["path"])
+            except Exception:
+                cache[s["path"]] = []
+        for t, strength in cache[s["path"]]:
+            if s["a"] - WIN < t < s["b"]:
+                events.append((cursor + max(0.0, t - s["a"]) / spd, strength))
+        cursor += (s["b"] - s["a"]) / spd
+    events.sort()
+
+    ranges: list[list[float]] = []
+    for t, strength in events:
+        if ranges and t - ranges[-1][1] <= min_gap:
+            ranges[-1][1] = t + WIN
+            ranges[-1][2] = max(ranges[-1][2], strength)
+        else:
+            ranges.append([t, t + WIN, strength])
+    return [(round(a, 1), round(b, 1), round(st, 2)) for a, b, st in ranges]
+
+
+def _vocal_block(vocals: list[tuple[float, float, float]], rules: list[str]) -> list[str]:
+    """발성 구간 목록 → 프롬프트 블록."""
+    if not vocals:
+        return []
+    lines = ["", "[실제 발성 구간 — 이 시간대에 강아지 소리(짖음·낑낑·으르렁)가 실제로 난다 (완성 기준)]"]
+    for a, b, st in vocals:
+        lines.append(f"- {a:.1f}~{b:.1f}초 (강도 {st:.1f})")
+    return lines + rules
 
 
 def _out_to_src(segments: list[dict], t: float) -> tuple[dict, float]:
@@ -445,6 +610,152 @@ def _out_to_src(segments: list[dict], t: float) -> tuple[dict, float]:
     return segments[-1], segments[-1]["b"]
 
 
+_DIMS_CACHE: dict[str, tuple[int, int]] = {}
+
+
+def _display_dims(path: str) -> tuple[int, int]:
+    """회전 메타데이터 반영된 표시 크기 (render_cinema.display_dims와 동일 로직)."""
+    if path not in _DIMS_CACHE:
+        out = subprocess.run(
+            [config.FFPROBE, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height:stream_side_data=rotation",
+             "-of", "json", path], capture_output=True, text=True, timeout=60)
+        st = json.loads(out.stdout)["streams"][0]
+        w, h = int(st["width"]), int(st["height"])
+        rot = 0
+        for sd in st.get("side_data_list", []):
+            rot = int(sd.get("rotation", 0) or 0)
+        if abs(rot) % 180 == 90:
+            w, h = h, w
+        _DIMS_CACHE[path] = (w, h)
+    return _DIMS_CACHE[path]
+
+
+def _bubble_pos(seg: dict, cx: float, cy: float, preset: str) -> tuple[float, float]:
+    """피사체 중심(원본 프레임 비율) → 완성 프레임 비율 좌표.
+
+    피사체 추적은 원본 클립 프레임에서 돌지만 말풍선 fx/fy는 완성(1080x1920) 프레임
+    기준이다. render_cinema의 세그먼트 변환(회전 → 확대 크롭 → 캔버스 배치)을 그대로
+    따라가 좌표계를 일치시킨다 — 안 하면 확대·회전·가로 소스에서 위치가 어긋난다.
+    """
+    try:
+        w0, h0 = _display_dims(seg["path"])
+    except Exception:
+        return cx, cy
+    rot = int(seg.get("rot") or 0)
+    if rot in (90, 270, -90):
+        cx, cy = (1 - cy, cx) if rot == 90 else (cy, 1 - cx)
+        w0, h0 = h0, w0
+    zoom = float(seg.get("zoom") or 1)
+    if zoom > 1.001:
+        cw, ch = int(w0 / zoom) // 2 * 2, int(h0 / zoom) // 2 * 2
+        zcx, zcy = seg.get("zcx"), seg.get("zcy")
+        zcx = 0.5 if zcx is None else float(zcx)
+        zcy = 0.5 if zcy is None else float(zcy)
+        zx = min(max(int(w0 * zcx - cw / 2), 0), w0 - cw)
+        zy = min(max(int(h0 * zcy - ch / 2), 0), h0 - ch)
+        cx = min(max((cx * w0 - zx) / cw, 0.0), 1.0)
+        cy = min(max((cy * h0 - zy) / ch, 0.0), 1.0)
+        w0, h0 = cw, ch
+    if preset == "cinema":
+        # 1920x1080 정규화 → 세로 캔버스 중앙 밴드(높이 1080*1080/1920)로 축소 배치
+        if h0 > w0:  # 세로 소스는 밴드 안 블러 중앙
+            cx = 0.5 + (cx - 0.5) * (1080 * w0 / h0) / 1920
+        return cx, 0.5 + (cy - 0.5) * (1080 * 1080 / 1920) / 1920
+    # src_portrait 풀스크린 (1080x1920)
+    if h0 > w0:   # 세로 → cover-crop
+        s = max(1080 / w0, 1920 / h0)
+        return (0.5 + (cx - 0.5) * w0 * s / 1080,
+                0.5 + (cy - 0.5) * h0 * s / 1920)
+    disp_h = 1080 * h0 / w0    # 가로 → 블러 배경 + 원본 중앙
+    return cx, 0.5 + (cy - 0.5) * disp_h / 1920
+
+
+def verify_prompt(montages: list[dict], items: list[dict], kind: str) -> str:
+    what = "나레이션" if kind == "narr" else "말풍선"
+    lines = [
+        f"너는 쇼츠 {what} 검수자다. 아래 각 항목은 완성 영상의 특정 시각에 표시될 {what}이다.",
+        "몽타주 이미지를 Read 도구로 전부 확인해라. 각 칸 좌상단 노란 숫자는 완성 영상 기준",
+        "시각(초)이고, 각 항목의 표시 시각과 그 직후 프레임이 포함돼 있다.",
+        "",
+        "[검수 항목]",
+    ]
+    for i, it in enumerate(items):
+        lines.append(f"- {i}) at {float(it['at']):.1f}초: \"{it['text']}\"")
+    lines += [
+        "",
+        "[몽타주]",
+    ]
+    for m in montages:
+        lines.append(f"- {m['name']} (칸별 시각: {', '.join(str(s) for s in m['stamps'])}초)")
+    lines += [
+        "",
+        "[판정 기준]",
+        "- keep: 그 시각 화면과 텍스트가 자연스럽게 맞음",
+        "- fix: 내용은 맞지만 시각이 어긋남(at을 ±2초 내로 조정) 또는 화면과 살짝 어긋난 표현 수정",
+        "- drop: 화면에서 근거를 찾을 수 없는 내용 (지어낸 행동·감정)",
+        "- 확신이 없으면 keep. fix여도 말투·문체는 유지하고 사실 관계만 고쳐라.",
+        "",
+        "다른 말 없이 아래 JSON만 출력해라 (모든 항목 포함):",
+        '{"items": [{"i": 0, "action": "keep", "at": 3.2, "text": "...", "why": "화면 근거"}]}',
+    ]
+    return "\n".join(lines)
+
+
+def verify_items(items: list[dict], segments: list[dict], workdir: Path,
+                 total: float, kind: str = "narr") -> list[dict]:
+    """생성된 나레이션/말풍선을 해당 시각 프레임으로 재검증 — keep/fix/drop 반영.
+
+    각 항목의 at과 at+1.2초 프레임을 뽑아 화면↔텍스트 일치를 판정시킨다.
+    검증 자체가 실패하면 원본을 그대로 반환한다 (검증이 생성을 깨면 안 됨).
+    """
+    if not items:
+        return items
+    try:
+        pts, seen = [], set()
+        for it in items:
+            for t in (float(it["at"]), float(it["at"]) + 1.2):
+                t = min(max(0.0, t), max(0.0, total - 0.05))
+                key = round(t, 1)
+                if key in seen:
+                    continue
+                seen.add(key)
+                seg, st = _out_to_src(segments, t)
+                pts.append((key, seg["path"], round(st, 2)))
+        pts.sort(key=lambda p: p[0])
+        montages = _render_montages(pts, workdir, "v_")
+        data = run_claude(verify_prompt(montages, items, kind), workdir, MODEL_FAST)
+    except Exception:
+        return items
+
+    verdicts = {}
+    for v in data.get("items", []):
+        try:
+            verdicts[int(v["i"])] = v
+        except (KeyError, TypeError, ValueError):
+            continue
+    out = []
+    for i, it in enumerate(items):
+        v = verdicts.get(i)
+        action = str(v.get("action", "keep")) if v else "keep"
+        if action == "drop":
+            continue
+        if action == "fix" and v:
+            it = dict(it)
+            try:
+                new_at = float(v.get("at", it["at"]))
+                if abs(new_at - float(it["at"])) <= 2.0:
+                    it["at"] = round(min(max(0.0, new_at), max(0.0, total - 1)), 1)
+            except (TypeError, ValueError):
+                pass
+            new_text = str(v.get("text", "")).strip()
+            if new_text:
+                it["text"] = new_text
+        out.append(it)
+    out.sort(key=lambda x: float(x["at"]))
+    return out
+
+
 def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
                preset: str = "wanghee", direction: str = "") -> dict:
     """segments → {bubbles:[{a,b,text,fx,fy}]}. 텍스트·시각은 Claude, 좌표는 피사체 추적.
@@ -455,18 +766,26 @@ def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
 
     workdir = FRAME_DIR / ("bub_" + uuid.uuid4().hex[:8])
     montages, total = build_montages(segments, workdir)
+    vocals = _vocal_ranges_out(segments) if preset != "cinema" else []
     data = run_claude(
         bubble_prompt(montages, style, synopsis, total,
-                      _bubble_examples(preset), preset, direction), workdir, MODEL_FAST)
+                      _bubble_examples(preset), preset, direction, vocals),
+        workdir, MODEL_FAST)
 
-    track_cache: dict[int, list] = {}
-    bubbles = []
+    raw = []
     for b in data.get("bubbles", []):
         at = float(b.get("at", 0))
         dur = min(2.5, max(1.2, float(b.get("dur", 1.8))))
         text = str(b.get("text", "")).strip()
         if not text or at >= total:
             continue
+        raw.append({"at": round(at, 1), "dur": dur, "text": text})
+    raw = verify_items(raw, segments, workdir, total, kind="bubble")
+
+    track_cache: dict[int, list] = {}
+    bubbles = []
+    for b in raw:
+        at, dur, text = b["at"], b["dur"], b["text"]
         seg, src_t = _out_to_src(segments, at + dur / 2)  # 표시 구간 중간 시점의 피사체 위치
         si = segments.index(seg)
         if si not in track_cache:
@@ -486,13 +805,17 @@ def ai_bubbles(segments: list[dict], style: str, synopsis: str = "",
         else:
             if rel < knots[0][0]:
                 cx, cy = knots[0][1], knots[0][2]
-        fx = min(0.85, max(0.15, cx))          # 텍스트가 화면 밖으로 안 잘리게
-        fy = min(0.80, max(0.10, cy - 0.11))   # 피사체 위쪽
+        # 편집 변환(회전·확대·캔버스 배치)을 통과시켜 완성 프레임 좌표로.
+        # 오프셋 없이 피사체 중심 높이 그대로 — 확정본 실측(36쌍)에서 머리 위(-0.11)
+        # 오프셋을 사용자가 매번 +0.10 되돌렸다.
+        fx, fy = _bubble_pos(seg, cx, cy, preset)
+        fx = min(0.85, max(0.15, fx))          # 텍스트가 화면 밖으로 안 잘리게
+        fy = min(0.80, max(0.10, fy))
         bubbles.append({"a": round(at, 1), "b": round(min(total, at + dur), 1),
                         "text": text, "fx": round(fx, 3), "fy": round(fy, 3)})
     bubbles.sort(key=lambda x: x["a"])
     log_bubbles("ai", bubbles, preset=preset)
-    return {"bubbles": bubbles}
+    return {"bubbles": bubbles, "questions": _pick_questions(data)}
 
 
 def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
@@ -526,6 +849,11 @@ def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
         lines += ["", "[이 채널에서 실제 자주 쓴 효과음 — 취향 참고용, 화면에 맞는 소리가 항상 우선]"]
         for name, cnt in usage:
             lines.append(f"- {name} ({cnt}회)")
+    vocals = _vocal_ranges_out(segments) if preset != "cinema" else []
+    lines += _vocal_block(vocals, [
+        "- 발성 구간엔 짖음·낑낑류 효과음을 겹치지 마라 — 진짜 소리가 이미 있다.",
+        "- 발성 순간을 강조하고 싶으면 그 직전·직후 시각에 배치해라.",
+    ])
     lines += _direction_block(direction)
     lines += [
         "",
@@ -534,9 +862,10 @@ def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
         f"- 개수는 {max(1, int(total // 8))}~{max(2, int(total // 4))}개, 서로 2초 이상 간격",
         "- at은 그 행동이 시작되는 시각. 화면과 안 맞으면 넣지 마라 (억지 배치 금지)",
         "- name은 위 목록에 있는 것만.",
+        *_question_lines("효과음 배치"),
         "",
         "아래 JSON만 출력해라:",
-        '{"sfx": [{"at": 3.2, "name": "dog_whine1", "why": "화면 근거"}]}',
+        '{"sfx": [{"at": 3.2, "name": "dog_whine1", "why": "화면 근거"}], "questions": []}',
     ]
     data = run_claude("\n".join(lines), workdir, MODEL_FAST)
     out = []
@@ -546,7 +875,7 @@ def ai_sfx(segments: list[dict], style: str, sfx_options: list[dict],
             out.append({"at": round(at, 1), "name": name, "why": str(s.get("why", ""))})
     out.sort(key=lambda x: x["at"])
     log_sfx("ai", [{"at": s["at"], "name": s["name"]} for s in out], preset=preset)
-    return {"sfx": out}
+    return {"sfx": out, "questions": _pick_questions(data)}
 
 
 def recommend_prompt(clip_montages: list[dict], synopsis: str, style: str,
@@ -619,6 +948,63 @@ def recommend_edit(clips: list[dict], synopsis: str, style: str,
         segments.append({"clip": ci, "a": round(a, 1), "b": round(b, 1), "spd": spd,
                          "role": str(s.get("role", "")), "why": str(s.get("why", ""))})
     return {"segments": segments, "note": data.get("note", "")}
+
+
+def clarify_prompt(task: str, context: str) -> str:
+    return "\n".join([
+        "너는 영상 편집 실행 전에 요청을 검토하는 조수다. 아래 작업은 실행에 몇 분이 걸리므로,",
+        "착수 전에 '해석이 갈려서 결과가 크게 달라지는 지점'이 있는지만 판단해라.",
+        "",
+        f"[작업] {task}",
+        "",
+        "[요청 내용]",
+        context,
+        "",
+        "[기준]",
+        "- 질문을 만들기 전에 요청을 다시 읽어라. 답이 요청 안에 이미 적혀 있으면 그 질문은 금지다.",
+        "  (예: '정속으로 리플레이'라고 썼는데 리플레이 속도를 묻기 = 금지)",
+        "- 반대로 '임팩트 있게', '더 재밌게'처럼 방향만 있고 방법·구간이 없는 요청은 갈림길이다",
+        "  — 연출 방법이나 대상 구간을 선택지로 물어라.",
+        "- 기준: 유능한 편집자 두 명이 이 요청만 읽고 서로 크게 다른 결과물을 만들겠는가? 그럴 때만 질문.",
+        "- 질문은 최대 2개, 각 질문에 선택지 2~3개를 같이 제시해라 (편집자가 클릭 한 번으로 답하게).",
+        "- 사소한 취향·디테일, 실행하면서 화면을 보고 판단할 수 있는 것은 질문 금지.",
+        "- 구체적인 요청은 질문 0개가 정상이다.",
+        "",
+        "다른 말 없이 아래 JSON만 출력해라:",
+        '{"questions": [{"q": "질문?", "options": ["선택지1", "선택지2"]}]}',
+    ])
+
+
+def clarify_check(task: str, context: str) -> list[dict]:
+    """B. 착수 전 해석 확인 — 텍스트만 보는 빠른 호출(프레임 없음, 수십 초).
+
+    갈림길이면 [{q, options}] 0~2개, 확실하거나 검사 실패면 [] (실패가 실행을 막으면 안 됨).
+    """
+    workdir = FRAME_DIR / "clarify"
+    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        data = run_claude(clarify_prompt(task, context), workdir, MODEL_FAST)
+    except Exception:
+        return []
+    out = []
+    for q in data.get("questions", [])[:2]:
+        text = (str(q.get("q", "")) if isinstance(q, dict) else str(q)).strip()
+        if not text:
+            continue
+        opts = [str(o).strip() for o in (q.get("options", []) if isinstance(q, dict) else [])
+                if str(o).strip()][:3]
+        out.append({"q": text, "options": opts})
+    return out
+
+
+def merge_answers(direction: str, answers: list[dict]) -> str:
+    """착수 전 질문에 대한 편집자 답변을 디렉션 텍스트에 병합."""
+    rows = [f"Q: {str(a.get('q', '')).strip()} → A: {str(a.get('a', '')).strip()}"
+            for a in answers if str(a.get("a", "")).strip()]
+    if not rows:
+        return direction
+    return (direction + "\n\n[착수 전 질문에 대한 편집자 답변 — 반드시 반영]\n"
+            + "\n".join(rows)).strip()
 
 
 def edit_apply_prompt(montages: list[dict], seg_lines: list[str], style: str,
